@@ -111,13 +111,6 @@ function analyze() {
   }
 
   if (bestRoi > -999) {
-    // تحديث الشاشة في الـ PM2 Logs
-    process.stdout.write(
-      `\r[${new Date().toLocaleTimeString()}] Best ROI: ${bestRoi.toFixed(
-        4
-      )}% | ${bestPathStr} `
-    );
-
     // --- نظام الحفظ في الملف ---
     // بنسجل بس لو الربح حقيقي (أكبر من 0) وفيه تغيير ملحوظ عن آخر تسجيل عشان الملف ميبقاش ضخم
     if (bestRoi > 0 && Math.abs(bestRoi - lastLoggedRoi) > 0.001) {
