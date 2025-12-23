@@ -1,16 +1,18 @@
 const ccxt = require("ccxt").pro;
 const fs = require("fs");
-
 require("dotenv").config();
 
-// --- Configuration ---
-const API_KEY = process.env.BINANCE_API_KEY;
-const SECRET_KEY = process.env.BINANCE_SECRET_KEY;
-const LOG_FILE = "arbitrage_success.txt";
+// --- الإعدادات الذكية ---
+const LOG_FILE = "arbitrage_radar.txt";
+const EVAL_FILE = "trade_evaluation.csv";
+const WHALE_LOG = "whale_alerts.txt";
+const INITIAL_BALANCE = 100;
+const MIN_DISPLAY_ROI = 0.002; // الحد الأدنى لعرض الصفقة (عشان الهدوء)
+const TRACKING_TIME = 3 * 60 * 1000; // تم التعديل لـ 1 دقيقة بناءً على طلبك
 
 const exchange = new ccxt.binance({
-  apiKey: API_KEY,
-  secret: SECRET_KEY,
+  apiKey: process.env.BINANCE_API_KEY,
+  secret: process.env.BINANCE_SECRET_KEY,
   enableRateLimit: true,
 });
 
@@ -25,10 +27,31 @@ const assets = [
   "DOGE",
   "LINK",
   "AVAX",
+  "DOT",
+  "MATIC",
+  "LTC",
+  "SHIB",
+  "TRX",
+  "NEAR",
+  "OP",
+  "ARB",
+  "INJ",
+  "TIA",
+  "ORDI",
+  "PEPE",
+  "RNDR",
+  "SUI",
+  "APT",
+  "STX",
+  "KAS",
+  "FET",
+  "IMX",
+  "TAO",
 ];
 const orderBooks = {};
-const INITIAL_BALANCE = 1500;
-let lastLoggedRoi = 0; // لمنع تكرار تسجيل نفس الفرصة مية مرة في الثانية
+const whaleWatchlist = new Map();
+let activeTrackers = new Set();
+let lastLoggedRoi = 0;
 
 function generatePaths(base) {
   let paths = [];
@@ -45,55 +68,101 @@ function generatePaths(base) {
   }
   return paths;
 }
-
 const matrix = generatePaths("USDT");
 
-async function main() {
-  console.log("==================================================");
-  console.log("🚀 PERMANENT RADAR STARTING ON VPS...");
-  console.log(`📝 Success logs will be saved to: ${LOG_FILE}`);
-  console.log("==================================================");
+// --- 1. رادار الحيتان الديناميكي ---
+function detectWhales(symbol, book) {
+  if (!book.bids || book.bids.length < 10) return false;
+  let totalVolume = 0;
+  for (let i = 0; i < 10; i++) totalVolume += book.bids[i][0] * book.bids[i][1];
+  const averageOrder = totalVolume / 10;
+  const bestBid = book.bids[0];
+  const wallValue = bestBid[0] * bestBid[1];
 
-  const markets = await exchange.loadMarkets();
-  const symbols = [
-    ...new Set(matrix.flatMap((p) => p.map((step) => step.s))),
-  ].filter((s) => markets[s]);
+  if (wallValue > averageOrder * 6 || wallValue > 500000) {
+    if (whaleWatchlist.has(symbol)) return false;
+    const entryPrice = bestBid[0];
+    whaleWatchlist.set(symbol, true);
 
-  symbols.forEach((symbol) => {
-    (async () => {
-      while (true) {
-        try {
-          const book = await exchange.watchOrderBook(symbol, 5);
-          if (book && book.asks?.[0] && book.bids?.[0]) {
-            orderBooks[symbol] = book;
-            analyze();
-          }
-        } catch (e) {
-          break;
+    const startMsg = `[${new Date().toLocaleTimeString()}] 🐋 WHALE: ${symbol} | Wall: $${(
+      wallValue / 1000
+    ).toFixed(1)}K | Power: ${(wallValue / averageOrder).toFixed(
+      1
+    )}x | Price: ${entryPrice}`;
+    fs.appendFileSync(WHALE_LOG, startMsg + "\n");
+
+    setTimeout(async () => {
+      try {
+        const currentBook = orderBooks[symbol];
+        if (currentBook && currentBook.bids[0]) {
+          const exitPrice = currentBook.bids[0][0];
+          const priceChange = ((exitPrice - entryPrice) / entryPrice) * 100;
+          const resultMsg = `[${new Date().toLocaleTimeString()}] 📊 IMPACT (10m): ${symbol} | Change: ${priceChange.toFixed(
+            3
+          )}% | Price: ${exitPrice}\n`;
+          fs.appendFileSync(WHALE_LOG, resultMsg);
         }
+      } finally {
+        whaleWatchlist.delete(symbol);
       }
-    })();
-  });
+    }, TRACKING_TIME);
+    return true;
+  }
+  return false;
 }
 
+// --- 2. نظام تقييم الفرص ---
+function trackOpportunity(route, entryRoi) {
+  const routeKey = route.map((s) => s.s).join("|");
+  if (activeTrackers.has(routeKey)) return;
+  activeTrackers.add(routeKey);
+
+  setTimeout(async () => {
+    let balance = INITIAL_BALANCE;
+    let valid = true;
+    for (let step of route) {
+      const book = orderBooks[step.s];
+      if (!book || !book.asks[0]) {
+        valid = false;
+        break;
+      }
+      const price = step.side === "buy" ? book.asks[0][0] : book.bids[0][0];
+      balance =
+        step.side === "buy"
+          ? (balance / price) * 0.999
+          : balance * price * 0.999;
+    }
+    if (valid) {
+      const finalRoi = ((balance - INITIAL_BALANCE) / INITIAL_BALANCE) * 100;
+      const status = finalRoi > entryRoi ? "📈 GAINED" : "📉 DROPPED";
+      const logEntry = `${new Date().toLocaleTimeString()}, ${routeKey}, Entry: ${entryRoi.toFixed(
+        4
+      )}%, Final: ${finalRoi.toFixed(4)}%, ${status}\n`;
+      if (!fs.existsSync(EVAL_FILE))
+        fs.writeFileSync(
+          EVAL_FILE,
+          "Time, Route, Entry ROI, Final ROI, Status\n"
+        );
+      fs.appendFileSync(EVAL_FILE, logEntry);
+    }
+    activeTrackers.delete(routeKey);
+  }, TRACKING_TIME);
+}
+
+// --- 3. المحلل الرئيسي المعدل ---
 function analyze() {
-  let bestRoi = -999;
-  let bestPathStr = "";
+  let qualityPaths = [];
 
   for (let path of matrix) {
     let balance = INITIAL_BALANCE;
     let valid = true;
 
     for (let step of path) {
-      if (
-        !orderBooks[step.s] ||
-        !orderBooks[step.s].asks[0] ||
-        !orderBooks[step.s].bids[0]
-      ) {
+      const book = orderBooks[step.s];
+      if (!book || !book.asks[0] || !book.bids[0]) {
         valid = false;
         break;
       }
-      const book = orderBooks[step.s];
       const price = step.side === "buy" ? book.asks[0][0] : book.bids[0][0];
       balance =
         step.side === "buy"
@@ -103,28 +172,86 @@ function analyze() {
 
     if (valid) {
       let roi = ((balance - INITIAL_BALANCE) / INITIAL_BALANCE) * 100;
-      if (roi > bestRoi) {
-        bestRoi = roi;
-        bestPathStr = `USDT → ${path.map((s) => s.target).join(" → ")}`;
+      let profitUsd = balance - INITIAL_BALANCE;
+
+      if (roi > MIN_DISPLAY_ROI) {
+        let hasWhale = path.some((step) => whaleWatchlist.has(step.s));
+        qualityPaths.push({
+          roi: roi,
+          profitUsd: profitUsd,
+          path: path,
+          routeStr: path.map((s) => s.target).join(" -> "),
+          isGolden: hasWhale && roi > 0.01,
+        });
       }
     }
   }
 
-  if (bestRoi > -999) {
-    // --- نظام الحفظ في الملف ---
-    // بنسجل بس لو الربح حقيقي (أكبر من 0) وفيه تغيير ملحوظ عن آخر تسجيل عشان الملف ميبقاش ضخم
-    if (bestRoi > 0 && Math.abs(bestRoi - lastLoggedRoi) > 0.001) {
-      const timestamp = new Date().toLocaleString();
-      const logEntry = `[${timestamp}] 💰 PROFIT: ${bestRoi.toFixed(
-        4
-      )}% | Route: ${bestPathStr}\n`;
+  qualityPaths.sort((a, b) => b.roi - a.roi);
 
-      fs.appendFileSync(LOG_FILE, logEntry);
-      console.log(`\n✅ Saved to Log: ${bestRoi.toFixed(4)}% Profit Found!`);
+  process.stdout.write("\x1B[2J\x1B[0;0H");
+  console.log(
+    `====================================================================`
+  );
+  console.log(
+    `🎯 QUALITY SCANNER | ${new Date().toLocaleTimeString()} | Bal: $${INITIAL_BALANCE}`
+  );
+  console.log(
+    `====================================================================`
+  );
 
-      lastLoggedRoi = bestRoi; // تحديث لآخر ربح متسجل
+  if (qualityPaths.length === 0) {
+    console.log("\n   Waiting for profitable opportunities... ⏳\n");
+  } else {
+    console.log(` Rank |   ROI %   | Profit $ | Status   | Path Schedule`);
+    console.log(
+      `--------------------------------------------------------------------`
+    );
+    qualityPaths.slice(0, 12).forEach((item, index) => {
+      const tag = item.isGolden ? "🔥 GOLD " : "✅ OK   ";
+      const roiStr = item.roi.toFixed(3).padStart(7, " ");
+      const prfStr = item.profitUsd.toFixed(2).padStart(6, " ");
+      console.log(
+        ` [#${(index + 1)
+          .toString()
+          .padEnd(2)}] | ${roiStr}% | $${prfStr}  | ${tag} | ${item.routeStr}`
+      );
+    });
+  }
+
+  if (qualityPaths.length > 0 && qualityPaths[0].roi > 0.02) {
+    const best = qualityPaths[0];
+    if (Math.abs(best.roi - lastLoggedRoi) > 0.005) {
+      fs.appendFileSync(
+        LOG_FILE,
+        `[${new Date().toLocaleString()}] ROI: ${best.roi.toFixed(
+          4
+        )}% | $${best.profitUsd.toFixed(2)} | ${best.routeStr}\n`
+      );
+      trackOpportunity(best.path, best.roi);
+      lastLoggedRoi = best.roi;
     }
   }
 }
 
+async function main() {
+  const markets = await exchange.loadMarkets();
+  const symbols = [...new Set(matrix.flatMap((p) => p.map((s) => s.s)))].filter(
+    (s) => markets[s]
+  );
+  symbols.forEach((symbol) => {
+    (async () => {
+      while (true) {
+        try {
+          const book = await exchange.watchOrderBook(symbol, 20);
+          orderBooks[symbol] = book;
+          detectWhales(symbol, book);
+          analyze();
+        } catch (e) {
+          await new Promise((r) => setTimeout(r, 1000));
+        }
+      }
+    })();
+  });
+}
 main().catch(console.error);
