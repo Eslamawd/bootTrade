@@ -8,7 +8,7 @@ const EVAL_FILE = "trade_evaluation.csv";
 const WHALE_LOG = "whale_alerts.txt";
 const INITIAL_BALANCE = 100;
 const MIN_DISPLAY_ROI = 0.002; // الحد الأدنى لعرض الصفقة (عشان الهدوء)
-const TRACKING_TIME = 3 * 60 * 1000; // تم التعديل لـ 1 دقيقة بناءً على طلبك
+const TRACKING_TIME = 10 * 60 * 1000; // تم التعديل لـ 1 دقيقة بناءً على طلبك
 
 const exchange = new ccxt.binance({
   apiKey: process.env.BINANCE_API_KEY,
