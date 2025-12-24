@@ -134,8 +134,17 @@ class RevenueMultiTradeBot {
       stopLoss: opp.stopLoss,
       takeProfit: opp.takeProfit,
       status: "ACTIVE",
-      fees: tradeSize * 0.002, // عمولة 0.2% (شراء + بيع)
+      fees: tradeSize * 0.002,
     };
+
+    // --- السطر الجديد للإضافة في ملف الـ CSV عند الدخول ---
+    fs.appendFileSync(
+      this.logFile,
+      `${new Date().toISOString()},${trade.symbol},${
+        trade.entryPrice
+      },WAITING,0%,0,${trade.whaleSize},ENTRY_OPEN,0\n`
+    );
+
     this.activeTrades.push(trade);
     this.startSmartMonitoring(trade);
   }
