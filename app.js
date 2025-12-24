@@ -4,8 +4,8 @@ const fs = require("fs");
 require("dotenv").config();
 
 const CONFIG = {
-  MIN_NET_PROFIT: 0.003, // تفعيل التريلينج عند 0.3% صافي (بعد خصم 0.2% عمولات)
-  MAX_NET_LOSS: -0.005, // ستوب لوز عند -0.5%
+  MIN_NET_PROFIT: 0.003, // تفعيل التريلينج عند 0.3% ربح صافي
+  MAX_NET_LOSS: -0.007, // ستوب لوز أوسع قليلاً (0.7%) لإعطاء مساحة للارتداد
   SYMBOLS: [
     "BTC/USDT",
     "ETH/USDT",
@@ -29,9 +29,9 @@ const CONFIG = {
     "RNDR/USDT",
   ],
   DYNAMIC_WHALES: {},
-  MAX_CONCURRENT_TRADES: 5,
+  MAX_CONCURRENT_TRADES: 20, // تقليل العدد لاختيار "صفوة" الفرص
   UPDATE_INTERVAL: 1000,
-  MAX_MONITOR_TIME: 3000000, // 50 دقيقة
+  MAX_MONITOR_TIME: 86400000, // الصبر لمدة 24 ساعة بدلاً من 50 دقيقة
 };
 
 class RevenueMultiTradeBot {
@@ -47,7 +47,7 @@ class RevenueMultiTradeBot {
     this.logFile = "revenue_multi_log.csv";
     this.initLogs();
     console.log(
-      "💰 RevenueMultiTradeBot - نظام القناص المطور (حساب العمولات المزدوج)"
+      "💰 RevenueMultiTradeBot - نظام الصبر الاستراتيجي (No Timeout)"
     );
   }
 
@@ -67,12 +67,13 @@ class RevenueMultiTradeBot {
         const totalDepth =
           orderBook.bids?.reduce((sum, [p, s]) => sum + p * s, 0) || 0;
         const avgOrder = totalDepth / 20;
+        // نرفع المعيار ليكون الحوت أضخم (avg * 2)
         CONFIG.DYNAMIC_WHALES[symbol] = Math.max(
-          5000,
-          Math.min(avgOrder * 1.5, 70000)
+          8000,
+          Math.min(avgOrder * 2, 100000)
         );
       } catch (e) {
-        CONFIG.DYNAMIC_WHALES[symbol] = 20000;
+        CONFIG.DYNAMIC_WHALES[symbol] = 30000;
       }
     }
   }
@@ -81,7 +82,7 @@ class RevenueMultiTradeBot {
     if (!orderBook || !orderBook.bids?.length) return null;
     if (this.activeTrades.some((t) => t.symbol === symbol)) return null;
 
-    const minWhale = (CONFIG.DYNAMIC_WHALES[symbol] || 50000) * 0.4;
+    const minWhale = (CONFIG.DYNAMIC_WHALES[symbol] || 50000) * 0.5;
     const whale = this.findRealWhale(orderBook, minWhale);
 
     if (whale) {
@@ -89,20 +90,18 @@ class RevenueMultiTradeBot {
       const whalePower = whale.value / minWhale;
       let dynamicTP = 0.003;
       if (whalePower > 2) dynamicTP = 0.005;
-      if (whalePower > 4) dynamicTP = 0.008;
 
       const spread =
         (orderBook.asks[0][0] - orderBook.bids[0][0]) / orderBook.bids[0][0];
-      const isNear = Math.abs(whale.price - entryPrice) / entryPrice < 0.002;
+      const isNear = Math.abs(whale.price - entryPrice) / entryPrice < 0.0015;
 
-      if (spread < 0.0015 && isNear) {
-        // رفعنا الـ spread قليلاً لزيادة فرص الدخول
+      if (spread < 0.0012 && isNear) {
         return {
           symbol,
           entryPrice,
           whaleSize: whale.value,
           stopLoss: entryPrice * (1 + CONFIG.MAX_NET_LOSS),
-          takeProfit: entryPrice * (1 + dynamicTP + 0.002), // إضافة 0.2% لتغطية العمولات
+          takeProfit: entryPrice * (1 + dynamicTP + 0.002),
         };
       }
     }
@@ -110,7 +109,7 @@ class RevenueMultiTradeBot {
   }
 
   findRealWhale(orderBook, minSize) {
-    let pool = orderBook.bids.slice(0, 20);
+    let pool = orderBook.bids.slice(0, 15);
     let bestWhale = null;
     for (const [p, s] of pool) {
       const val = p * s;
@@ -137,7 +136,6 @@ class RevenueMultiTradeBot {
       fees: tradeSize * 0.002,
     };
 
-    // --- السطر الجديد للإضافة في ملف الـ CSV عند الدخول ---
     fs.appendFileSync(
       this.logFile,
       `${new Date().toISOString()},${trade.symbol},${
@@ -150,7 +148,7 @@ class RevenueMultiTradeBot {
   }
 
   startSmartMonitoring(trade) {
-    trade.highestNetPnl = -0.002; // يبدأ بخصم العمولات فورا
+    trade.highestNetPnl = -0.002;
     trade.dynamicStopLoss = trade.stopLoss;
 
     const interval = setInterval(() => {
@@ -164,15 +162,15 @@ class RevenueMultiTradeBot {
 
       if (netPnl > trade.highestNetPnl) {
         trade.highestNetPnl = netPnl;
-        // تأمين عند 0.1% ربح صافي
-        if (netPnl >= 0.001 && trade.dynamicStopLoss < trade.entryPrice) {
+        // تأمين عند الوصول لنقطة التعادل
+        if (netPnl >= 0.0005 && trade.dynamicStopLoss < trade.entryPrice) {
           trade.dynamicStopLoss = trade.entryPrice;
         }
-        // تأمين عند 0.3% ربح صافي
+        // تأمين ربح بسيط عند الصعود
         if (netPnl >= 0.003) {
-          const guaranteedPrice = trade.entryPrice * 1.001;
-          if (trade.dynamicStopLoss < guaranteedPrice)
-            trade.dynamicStopLoss = guaranteedPrice;
+          const lockedPrice = trade.entryPrice * 1.001;
+          if (trade.dynamicStopLoss < lockedPrice)
+            trade.dynamicStopLoss = lockedPrice;
         }
       }
 
@@ -180,21 +178,23 @@ class RevenueMultiTradeBot {
       let reason = "";
       const targetPnl = trade.takeProfit / trade.entryPrice - 1 - 0.002;
 
-      if (netPnl >= targetPnl && trade.highestNetPnl - netPnl > 0.001) {
+      // الخروج بالربح (تريلينج)
+      if (netPnl >= targetPnl && trade.highestNetPnl - netPnl > 0.0005) {
         shouldExit = true;
         reason = "TRAILING_PROFIT";
-      } else if (curPrice <= trade.dynamicStopLoss) {
+      }
+      // الخروج بالستوب لوز (الحماية النهائية)
+      else if (curPrice <= trade.dynamicStopLoss) {
         shouldExit = true;
         reason =
           trade.dynamicStopLoss >= trade.entryPrice
             ? "DYNAMIC_SL_PROFIT"
             : "STOP_LOSS";
-      } else if (
-        Date.now() - trade.entryTime > CONFIG.MAX_MONITOR_TIME &&
-        netPnl < 0
-      ) {
+      }
+      // خروج اضطراري بعد 24 ساعة فقط
+      else if (Date.now() - trade.entryTime > CONFIG.MAX_MONITOR_TIME) {
         shouldExit = true;
-        reason = "TIMEOUT_LOSS";
+        reason = "LONG_TERM_FORCE_CLOSE";
       }
 
       if (shouldExit) {
@@ -237,16 +237,18 @@ class RevenueMultiTradeBot {
     console.log(`╠══════════════════════════════════════════════════════╣`);
     this.activeTrades.forEach((t) => {
       const cur = this.orderBooks[t.symbol]?.bids[0][0] || t.entryPrice;
-      const p = (((cur - t.entryPrice) / t.entryPrice) * 100 - 0.2).toFixed(2); // عرض الربح الصافي
+      const netPnlPercent = (
+        ((cur - t.entryPrice) / t.entryPrice) * 100 -
+        0.2
+      ).toFixed(2);
       console.log(
-        `║ 🚀 ${t.symbol.padEnd(9)} | Net PnL: ${p.padStart(5)}% | Target: ${(
-          (t.takeProfit / t.entryPrice - 1) * 100 -
-          0.2
-        ).toFixed(2)}% ║`
+        `║ 🚀 ${t.symbol.padEnd(9)} | Net: ${netPnlPercent.padStart(
+          5
+        )}% | Time: ${Math.floor((Date.now() - t.entryTime) / 60000)}m ║`
       );
     });
     if (this.activeTrades.length === 0)
-      console.log(`║          ⏳ جاري البحث عن حيتان جديدة...             ║`);
+      console.log(`║          ⏳ جاري البحث عن فرص ذهبية...               ║`);
     console.log(`╚══════════════════════════════════════════════════════╝`);
   }
 
