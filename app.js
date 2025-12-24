@@ -1,287 +1,959 @@
 const ccxt = require("ccxt");
 const WebSocket = require("ws");
 const fs = require("fs");
+const TelegramBot = require("node-telegram-bot-api");
+const TI = require("technicalindicators");
+const DatabaseManager = require("./DatabaseManager");
 require("dotenv").config();
 
 const CONFIG = {
-  MIN_NET_PROFIT: 0.003, // تفعيل التريلينج عند 0.3% ربح صافي
-  MAX_NET_LOSS: -0.007, // ستوب لوز أوسع قليلاً (0.7%) لإعطاء مساحة للارتداد
   SYMBOLS: [
     "BTC/USDT",
     "ETH/USDT",
-    "SOL/USDT",
     "BNB/USDT",
     "XRP/USDT",
     "ADA/USDT",
-    "AVAX/USDT",
+    "SOL/USDT",
     "DOGE/USDT",
-    "DOT/USDT",
-    "LINK/USDT",
     "MATIC/USDT",
+    "DOT/USDT",
     "LTC/USDT",
-    "NEAR/USDT",
-    "OP/USDT",
-    "ARB/USDT",
-    "INJ/USDT",
-    "TIA/USDT",
-    "ORDI/USDT",
-    "SUI/USDT",
-    "RNDR/USDT",
   ],
-  DYNAMIC_WHALES: {},
-  MAX_CONCURRENT_TRADES: 20, // تقليل العدد لاختيار "صفوة" الفرص
-  UPDATE_INTERVAL: 1000,
-  MAX_MONITOR_TIME: 86400000, // الصبر لمدة 24 ساعة بدلاً من 50 دقيقة
+  MAX_CONCURRENT_TRADES: 3,
+  UPDATE_INTERVAL: 5000, // أبطأ قليلاً لإعطاء فرصة لتحليل البيانات
+  MAX_MONITOR_TIME: 7200000, // ساعتين كحد أقصى
+  COOLDOWN_TIME: 300000, // 5 دقائق
+
+  // إعدادات المؤشرات
+  CANDLE_LIMIT: 100,
+  TIMEFRAME: "5m",
+
+  // إعدادات مصفوفة القرار
+  MIN_CONFIDENCE: 70,
+  MAX_RSI_ENTRY: 70,
+  MIN_VOLUME_RATIO: 0.8,
 };
 
-class RevenueMultiTradeBot {
+class ProfessionalTradingSystem {
   constructor() {
     this.exchange = new ccxt.binance({
       apiKey: process.env.BINANCE_API_KEY,
       secret: process.env.BINANCE_SECRET_KEY,
       enableRateLimit: true,
     });
+
+    // إدارة قاعدة البيانات
+    this.dbManager = new DatabaseManager();
+
+    // البيانات
     this.orderBooks = {};
     this.activeTrades = [];
-    this.performance = { trades: 0, wins: 0, losses: 0, netProfit: 0 };
-    this.logFile = "revenue_multi_log.csv";
+    this.cooldowns = {};
+    this.marketData = {}; // لتخزين البيانات المؤقتة
+
+    // Telegram
+    if (process.env.TELEGRAM_TOKEN && process.env.TELEGRAM_CHAT_ID) {
+      this.tgBot = new TelegramBot(process.env.TELEGRAM_TOKEN, {
+        polling: false,
+      });
+      this.chatId = process.env.TELEGRAM_CHAT_ID;
+    }
+
+    this.performance = {
+      trades: 0,
+      wins: 0,
+      losses: 0,
+      netProfit: 0,
+      totalConfidence: 0,
+    };
+
     this.initLogs();
-    console.log(
-      "💰 RevenueMultiTradeBot - نظام الصبر الاستراتيجي (No Timeout)"
-    );
+    this.sendTelegram("🏦 *بدء نظام التداول الاحترافي مع قاعدة بيانات*");
   }
 
   initLogs() {
-    if (!fs.existsSync(this.logFile)) {
+    if (!fs.existsSync("professional_trades.csv")) {
       const headers =
-        "Timestamp,Symbol,Entry,Exit,NetPnl%,NetPnl$,WhaleSize,Reason,Duration\n";
-      fs.writeFileSync(this.logFile, headers);
+        "Timestamp,Symbol,Entry,Exit,Pnl%,Pnl$,Confidence,RSI,VolumeRatio,Whales,Reasons\n";
+      fs.writeFileSync("professional_trades.csv", headers);
     }
   }
 
-  async updateDynamicWhaleSizes() {
-    console.log("🔄 جاري معايرة الرادار للحيتان...");
-    for (const symbol of CONFIG.SYMBOLS) {
-      try {
-        const orderBook = await this.exchange.fetchOrderBook(symbol, 20);
-        const totalDepth =
-          orderBook.bids?.reduce((sum, [p, s]) => sum + p * s, 0) || 0;
-        const avgOrder = totalDepth / 20;
-        // نرفع المعيار ليكون الحوت أضخم (avg * 2)
-        CONFIG.DYNAMIC_WHALES[symbol] = Math.max(
-          8000,
-          Math.min(avgOrder * 2, 100000)
-        );
-      } catch (e) {
-        CONFIG.DYNAMIC_WHALES[symbol] = 30000;
-      }
-    }
+  async sendTelegram(message) {
+    if (!this.tgBot) return;
+    try {
+      await this.tgBot.sendMessage(this.chatId, message, {
+        parse_mode: "Markdown",
+      });
+    } catch (e) {}
   }
 
-  analyzeForEntry(symbol, orderBook) {
-    if (!orderBook || !orderBook.bids?.length) return null;
-    if (this.activeTrades.some((t) => t.symbol === symbol)) return null;
+  // ==================== إدارة البيانات التاريخية ====================
+  async loadHistoricalData(symbol) {
+    try {
+      // محاولة تحميل من قاعدة البيانات أولاً
+      const dbCandles = await this.dbManager.getHistoricalCandles(
+        symbol,
+        CONFIG.TIMEFRAME,
+        CONFIG.CANDLE_LIMIT
+      );
 
-    const minWhale = (CONFIG.DYNAMIC_WHALES[symbol] || 50000) * 0.5;
-    const whale = this.findRealWhale(orderBook, minWhale);
+      if (dbCandles && dbCandles.length >= 50) {
+        // تحويل البيانات من قاعدة البيانات للصيغة المطلوبة
+        const candles = dbCandles
+          .map((c) => [
+            new Date(c.timestamp).getTime(), // timestamp
+            c.open,
+            c.high,
+            c.low,
+            c.close,
+            c.volume,
+          ])
+          .reverse(); // عكس الترتيب لأن قاعدة البيانات تعطينا الأحدث أولاً
 
-    if (whale) {
-      const entryPrice = orderBook.asks[0][0];
-      const whalePower = whale.value / minWhale;
-      let dynamicTP = 0.003;
-      if (whalePower > 2) dynamicTP = 0.005;
-
-      const spread =
-        (orderBook.asks[0][0] - orderBook.bids[0][0]) / orderBook.bids[0][0];
-      const isNear = Math.abs(whale.price - entryPrice) / entryPrice < 0.0015;
-
-      if (spread < 0.0012 && isNear) {
-        return {
-          symbol,
-          entryPrice,
-          whaleSize: whale.value,
-          stopLoss: entryPrice * (1 + CONFIG.MAX_NET_LOSS),
-          takeProfit: entryPrice * (1 + dynamicTP + 0.002),
+        this.marketData[symbol] = {
+          candles,
+          lastUpdate: Date.now(),
+          source: "database",
         };
+
+        console.log(
+          `📊 ${symbol}: تم تحميل ${candles.length} شمعة من قاعدة البيانات`
+        );
+        return true;
       }
+
+      // إذا البيانات غير كافية في قاعدة البيانات، نطلب من Binance
+      console.log(`📊 ${symbol}: جلب بيانات تاريخية من Binance...`);
+      const freshCandles = await this.exchange.fetchOHLCV(
+        symbol,
+        CONFIG.TIMEFRAME,
+        undefined,
+        CONFIG.CANDLE_LIMIT
+      );
+
+      if (freshCandles && freshCandles.length > 0) {
+        // حفظ في قاعدة البيانات
+        for (const candle of freshCandles) {
+          await this.dbManager.saveCandle(symbol, candle, CONFIG.TIMEFRAME);
+        }
+
+        this.marketData[symbol] = {
+          candles: freshCandles,
+          lastUpdate: Date.now(),
+          source: "binance",
+        };
+
+        console.log(`✅ ${symbol}: تم جلب وحفظ ${freshCandles.length} شمعة`);
+        return true;
+      }
+
+      return false;
+    } catch (error) {
+      console.error(`❌ خطأ في تحميل البيانات لـ ${symbol}:`, error.message);
+      return false;
     }
-    return null;
   }
 
-  findRealWhale(orderBook, minSize) {
-    let pool = orderBook.bids.slice(0, 15);
-    let bestWhale = null;
-    for (const [p, s] of pool) {
-      const val = p * s;
-      if (val > minSize && (!bestWhale || val > bestWhale.value)) {
-        bestWhale = { price: p, value: val };
+  async updateMarketData(symbol) {
+    try {
+      // جلب آخر شمعة فقط
+      const latestCandles = await this.exchange.fetchOHLCV(
+        symbol,
+        CONFIG.TIMEFRAME,
+        undefined,
+        2
+      );
+
+      if (latestCandles && latestCandles.length > 0) {
+        const latestCandle = latestCandles[latestCandles.length - 1];
+
+        // تحديث البيانات المحلية
+        if (!this.marketData[symbol]) {
+          this.marketData[symbol] = { candles: [] };
+        }
+
+        // إضافة الشمعة الجديدة
+        this.marketData[symbol].candles.push(latestCandle);
+
+        // الحفاظ على الحد الأقصى
+        if (this.marketData[symbol].candles.length > CONFIG.CANDLE_LIMIT) {
+          this.marketData[symbol].candles.shift();
+        }
+
+        // حفظ في قاعدة البيانات
+        await this.dbManager.saveCandle(symbol, latestCandle, CONFIG.TIMEFRAME);
+
+        this.marketData[symbol].lastUpdate = Date.now();
+        return true;
       }
+    } catch (error) {
+      console.error(`❌ خطأ في تحديث البيانات لـ ${symbol}:`, error.message);
     }
-    return bestWhale;
+    return false;
   }
 
-  async executeTrade(opp) {
-    if (this.activeTrades.length >= CONFIG.MAX_CONCURRENT_TRADES) return;
-    const tradeSize = 250;
-    const trade = {
-      id: `T_${Date.now()}`,
-      symbol: opp.symbol,
-      entryPrice: opp.entryPrice,
+  // ==================== حساب المؤشرات الفنية من البيانات التاريخية ====================
+  calculateTechnicalIndicators(symbol) {
+    if (!this.marketData[symbol] || !this.marketData[symbol].candles) {
+      return null;
+    }
+
+    const candles = this.marketData[symbol].candles;
+    if (candles.length < 50) {
+      console.warn(
+        `⚠️ ${symbol}: بيانات غير كافية للمؤشرات (${candles.length} فقط)`
+      );
+      return null;
+    }
+
+    const closes = candles.map((c) => c[4]); // close
+    const highs = candles.map((c) => c[2]); // high
+    const lows = candles.map((c) => c[3]); // low
+    const volumes = candles.map((c) => c[5]); // volume
+
+    try {
+      // RSI
+      const rsiValues = TI.RSI.calculate({
+        values: closes,
+        period: 14,
+      });
+      const currentRSI = rsiValues[rsiValues.length - 1];
+
+      // ATR (Average True Range)
+      const atrValues = TI.ATR.calculate({
+        high: highs,
+        low: lows,
+        close: closes,
+        period: 14,
+      });
+      const currentATR = atrValues[atrValues.length - 1];
+
+      // Moving Averages
+      const sma50Values = TI.SMA.calculate({
+        values: closes,
+        period: 50,
+      });
+      const sma200Values = TI.SMA.calculate({
+        values: closes,
+        period: 200,
+      });
+
+      const sma50 = sma50Values[sma50Values.length - 1];
+      const sma200 = sma200Values[sma200Values.length - 1];
+
+      // Volume Moving Average
+      const volumeMA20 = TI.SMA.calculate({
+        values: volumes,
+        period: 20,
+      });
+      const currentVolumeMA = volumeMA20[volumeMA20.length - 1];
+      const currentVolume = volumes[volumes.length - 1];
+      const volumeRatio = currentVolume / (currentVolumeMA || 1);
+
+      // MACD
+      const macdInput = {
+        values: closes,
+        fastPeriod: 12,
+        slowPeriod: 26,
+        signalPeriod: 9,
+        SimpleMAOscillator: false,
+        SimpleMASignal: false,
+      };
+      const macdResult = TI.MACD.calculate(macdInput);
+      const lastMACD = macdResult[macdResult.length - 1];
+
+      // Bollinger Bands
+      const bbResult = TI.BollingerBands.calculate({
+        values: closes,
+        period: 20,
+        stdDev: 2,
+      });
+      const lastBB = bbResult[bbResult.length - 1];
+
+      const indicators = {
+        rsi: currentRSI,
+        atr: currentATR,
+        sma50,
+        sma200,
+        volumeMA20: currentVolumeMA,
+        currentVolume,
+        volumeRatio,
+        macd: lastMACD?.MACD || 0,
+        macdSignal: lastMACD?.signal || 0,
+        macdHistogram: lastMACD?.histogram || 0,
+        bollingerUpper: lastBB?.upper || 0,
+        bollingerMiddle: lastBB?.middle || 0,
+        bollingerLower: lastBB?.lower || 0,
+        timestamp: Date.now(),
+      };
+
+      // حفظ المؤشرات في قاعدة البيانات
+      this.dbManager.saveTechnicalIndicators(symbol, indicators);
+      // تخزين متوسط الحجم لاستخدامه في تحليل الحيتان الديناميكي
+      if (!this.volumeHistory) this.volumeHistory = {};
+      this.volumeHistory[symbol] = {
+        avgVolume: currentVolumeMA * closes[closes.length - 1], // تحويل الحجم من عملات إلى دولار
+      };
+
+      return indicators;
+    } catch (error) {
+      console.error(`❌ خطأ في حساب المؤشرات لـ ${symbol}:`, error.message);
+      return null;
+    }
+  }
+
+  // ==================== مصفوفة القرار المحدثة ====================
+  calculateDecisionMatrix(symbol, orderBook) {
+    const indicators = this.calculateTechnicalIndicators(symbol);
+    if (!indicators) {
+      return { confidence: 0, reasons: ["❌ بيانات غير كافية"] };
+    }
+
+    let totalScore = 0;
+    const reasons = [];
+    const warnings = [];
+
+    // 1. RSI Analysis (25 نقطة)
+    if (indicators.rsi >= 40 && indicators.rsi <= 60) {
+      totalScore += 25;
+      reasons.push(`📈 RSI مثالي (${indicators.rsi.toFixed(1)})`);
+    } else if (indicators.rsi < 40) {
+      totalScore += 15;
+      reasons.push(`📉 RSI منخفض (${indicators.rsi.toFixed(1)}) - فرصة`);
+    } else if (indicators.rsi > 60 && indicators.rsi <= 65) {
+      totalScore += 10;
+      warnings.push(`⚠️ RSI مرتفع (${indicators.rsi.toFixed(1)})`);
+    } else if (indicators.rsi > 65) {
+      totalScore -= 20;
+      warnings.push(`🚨 RSI متشبع شراء (${indicators.rsi.toFixed(1)})`);
+    }
+
+    // 2. Volume Analysis (20 نقطة)
+    if (indicators.volumeRatio >= 1.5) {
+      totalScore += 20;
+      reasons.push(`📊 انفجار حجم (${indicators.volumeRatio.toFixed(1)}x)`);
+    } else if (indicators.volumeRatio >= 1.2) {
+      totalScore += 15;
+      reasons.push(`📈 حجم مرتفع (${indicators.volumeRatio.toFixed(1)}x)`);
+    } else if (indicators.volumeRatio < 0.8) {
+      totalScore -= 10;
+      warnings.push(`📉 حجم منخفض (${indicators.volumeRatio.toFixed(1)}x)`);
+    }
+
+    // 3. Whale Analysis (30 نقطة)
+    const whaleAnalysis = this.analyzeWhales(symbol, orderBook);
+    totalScore += whaleAnalysis.score;
+    reasons.push(...whaleAnalysis.reasons);
+    warnings.push(...whaleAnalysis.warnings);
+
+    // 4. Trend Analysis (15 نقطة)
+    if (indicators.sma50 > indicators.sma200) {
+      totalScore += 15;
+      reasons.push(`📈 اتجاه صاعد (SMA50 > SMA200)`);
+    } else if (indicators.sma50 < indicators.sma200) {
+      totalScore -= 10;
+      warnings.push(`📉 اتجاه هابط (SMA50 < SMA200)`);
+    }
+
+    // 5. MACD Analysis (10 نقطة)
+    if (
+      indicators.macd > indicators.macdSignal &&
+      indicators.macdHistogram > 0
+    ) {
+      totalScore += 10;
+      reasons.push(`🔷 MACD إيجابي`);
+    } else if (indicators.macd < indicators.macdSignal) {
+      totalScore -= 5;
+      warnings.push(`🔶 MACD سلبي`);
+    }
+
+    // 6. Liquidity Analysis (المتبقي)
+    const spread =
+      (orderBook.asks[0][0] - orderBook.bids[0][0]) / orderBook.bids[0][0];
+    if (spread < 0.0005) {
+      totalScore += 10;
+      reasons.push(`⚡ سيولة عالية (سبريد ${(spread * 100).toFixed(3)}%)`);
+    }
+
+    const confidence = Math.max(0, Math.min(100, totalScore));
+
+    return {
+      confidence,
+      reasons,
+      warnings,
+      indicators,
+      whaleAnalysis,
+      totalScore,
+    };
+  }
+
+  analyzeWhales(symbol, orderBook) {
+    if (!orderBook || !orderBook.bids)
+      return { score: 0, reasons: [], warnings: [], whales: [] };
+
+    // حساب العتبة: إما 0.5% من متوسط حجم التداول أو 20 ألف دولار كحد أدنى
+    const volData =
+      this.volumeHistory && this.volumeHistory[symbol]
+        ? this.volumeHistory[symbol].avgVolume
+        : 0;
+    const dynamicThreshold =
+      volData > 0 ? Math.max(20000, volData * 0.005) : 50000;
+
+    let score = 0;
+    const reasons = [];
+    const warnings = [];
+    const whales = [];
+
+    // فحص أعمق للأوردر بوك (حتى 20 مستوى)
+    for (let i = 0; i < Math.min(20, orderBook.bids.length); i++) {
+      const value = orderBook.bids[i][0] * orderBook.bids[i][1];
+      if (value >= dynamicThreshold) {
+        whales.push({
+          value,
+          position: i + 1,
+          size: (value / 1000).toFixed(1) + "K",
+        });
+      }
+    }
+
+    // توزيع النقاط بناءً على "وزن" الحيتان
+    if (whales.length >= 3) {
+      score += 30;
+      reasons.push(
+        `🐋🐋🐋 ${whales.length} حيتان فوق عتبة $${(
+          dynamicThreshold / 1000
+        ).toFixed(0)}K`
+      );
+    } else if (whales.length > 0) {
+      score += 15;
+      reasons.push(`🐋 رصد ${whales.length} حوت نشط`);
+    }
+
+    // جدار الحماية (Support Wall)
+    const frontWhales = whales.filter((w) => w.position <= 5);
+    if (frontWhales.length >= 2) {
+      score += 15;
+      reasons.push(`🛡️ جدار حماية قوي في أول 5 مستويات`);
+    }
+
+    return { score, reasons, warnings, whales, dynamicThreshold };
+  }
+  // ==================== تحليل الفرص ====================
+  analyzeForEntry(symbol, orderBook) {
+    // فحصات أساسية
+    if (this.activeTrades.length >= CONFIG.MAX_CONCURRENT_TRADES) return null;
+    if (this.activeTrades.some((t) => t.symbol === symbol)) return null;
+    if (
+      this.cooldowns[symbol] &&
+      Date.now() - this.cooldowns[symbol] < CONFIG.COOLDOWN_TIME
+    )
+      return null;
+    if (!orderBook || !orderBook.bids || !orderBook.asks) return null;
+
+    // التأكد من وجود بيانات تاريخية
+    if (
+      !this.marketData[symbol] ||
+      this.marketData[symbol].candles.length < 50
+    ) {
+      console.log(`⏳ ${symbol}: جاري جمع البيانات التاريخية...`);
+      return null;
+    }
+
+    // مصفوفة القرار
+    const decision = this.calculateDecisionMatrix(symbol, orderBook);
+
+    // شروط صارمة للدخول
+    if (decision.confidence < CONFIG.MIN_CONFIDENCE) return null;
+
+    const indicators = decision.indicators;
+    if (indicators.rsi > CONFIG.MAX_RSI_ENTRY) {
+      console.log(
+        `⏹️ ${symbol}: RSI مرتفع جداً (${indicators.rsi.toFixed(1)})`
+      );
+      return null;
+    }
+
+    if (indicators.volumeRatio < CONFIG.MIN_VOLUME_RATIO) {
+      console.log(
+        `⏹️ ${symbol}: حجم منخفض (${indicators.volumeRatio.toFixed(1)}x)`
+      );
+      return null;
+    }
+
+    const entryPrice = orderBook.asks[0][0];
+
+    // حساب أهداف ديناميكية
+    const targets = this.calculateDynamicTargets(
+      entryPrice,
+      indicators,
+      decision.confidence
+    );
+    if (targets.riskRewardRatio < 1.5) {
+      console.log(
+        `⏹️ ${symbol}: نسبة ربح/مخاطرة ضعيفة (${targets.riskRewardRatio.toFixed(
+          2
+        )})`
+      );
+      return null;
+    }
+
+    return {
+      symbol,
+      entryPrice,
+      stopLoss: targets.stopLoss,
+      takeProfit: targets.takeProfit,
+      confidence: decision.confidence,
+      reasons: decision.reasons,
+      warnings: decision.warnings,
+      indicators,
+      whaleAnalysis: decision.whaleAnalysis,
+      targets,
       entryTime: Date.now(),
-      size: tradeSize,
-      whaleSize: opp.whaleSize,
-      stopLoss: opp.stopLoss,
-      takeProfit: opp.takeProfit,
-      status: "ACTIVE",
-      fees: tradeSize * 0.002,
+    };
+  }
+  calculateDynamicTargets(entryPrice, indicators, confidence) {
+    // استخدام ATR لتحديد المستويات - رفعنا النسبة البديلة لـ 1.5% للتنفس
+    const atr = indicators.atr || entryPrice * 0.015;
+
+    // 1. ستوب لوز "أرجل": وسعنا المعاملات (2.0 و 2.8)
+    // لو الثقة عالية بنسيب مساحة 2x ATR، لو الثقة مهزوزة بنسيب 2.8x عشان السعر بيبقى متذبذب
+    const stopLossDistance = atr * (confidence > 80 ? 2.0 : 2.8);
+    const stopLoss = entryPrice - stopLossDistance;
+
+    // 2. تيك بروفيت طموح: عشان يعوض الستوب الواسع
+    const takeProfitDistance = atr * (confidence > 80 ? 4.0 : 3.5);
+    const takeProfit = entryPrice + takeProfitDistance;
+
+    // 3. حدود حماية "واقعية":
+    // وسعنا الحد الأدنى للستوب لـ 3% بدل 1% عشان الـ ATR ياخد راحته
+    const minStopLoss = entryPrice * 0.97;
+    // رفعنا سقف الطموح لـ 5% ربح بدل 3%
+    const maxTakeProfit = entryPrice * 1.05;
+
+    // اختيار السعر الأنسب (الأبعد في الستوب عشان التنفس)
+    const finalStopLoss = Math.min(stopLoss, minStopLoss); // هنا استخدمنا min عشان نضمن إنه "أرجل" وأبعد
+    const finalTakeProfit = Math.min(takeProfit, maxTakeProfit);
+
+    const riskRewardRatio =
+      (finalTakeProfit - entryPrice) / (entryPrice - finalStopLoss);
+
+    return {
+      stopLoss: finalStopLoss,
+      takeProfit: finalTakeProfit,
+      riskRewardRatio,
+      atrBased: indicators.atr ? true : false,
+      atrValue: atr,
+    };
+  }
+  // ==================== تنفيذ الصفقات ====================
+
+  // دالة لجلب الرصيد الحقيقي من حسابك
+  async getMyActualBalance() {
+    try {
+      const usdtBalance = 1000;
+      console.log(`💰 رصيدك الحالي في باينانس: ${usdtBalance.toFixed(2)} USDT`);
+      return usdtBalance;
+    } catch (error) {
+      console.error("❌ فشل في جلب الرصيد:", error.message);
+      return 0;
+    }
+  }
+
+  async executeTrade(opportunity) {
+    try {
+      const myBalance = await this.getMyActualBalance();
+      if (myBalance < 10) {
+        console.log("⚠️ رصيد غير كافي لفتح صفقة حقيقية");
+        return;
+      }
+      const tradeSize = myBalance * 0.99; // حجم ثابت للبداية
+
+      const trade = {
+        id: `TRADE_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+        symbol: opportunity.symbol,
+        entryPrice: opportunity.entryPrice,
+        entryTime: opportunity.entryTime,
+        size: tradeSize,
+        stopLoss: opportunity.stopLoss,
+        takeProfit: opportunity.takeProfit,
+        status: "ACTIVE",
+
+        // بيانات القرار
+        confidence: opportunity.confidence,
+        reasons: opportunity.reasons,
+        warnings: opportunity.warnings,
+
+        // بيانات فنية
+        rsi: opportunity.indicators.rsi,
+        volumeRatio: opportunity.indicators.volumeRatio,
+        atr: opportunity.indicators.atr,
+
+        // التتبع
+        highestPrice: opportunity.entryPrice,
+        currentStopLoss: opportunity.stopLoss,
+        stopLossHistory: [
+          {
+            price: opportunity.stopLoss,
+            time: Date.now(),
+            reason: "Initial Stop Loss",
+          },
+        ],
+      };
+
+      this.activeTrades.push(trade);
+
+      // إرسال تقرير مفصل
+      const whaleCount = opportunity.whaleAnalysis.whales?.length || 0;
+      const whaleText =
+        whaleCount >= 3
+          ? `🐋🐋🐋 ${whaleCount}`
+          : whaleCount === 2
+          ? `🐋🐋 ${whaleCount}`
+          : whaleCount === 1
+          ? `🐋 ${whaleCount}`
+          : "لا توجد";
+
+      this.sendTelegram(
+        `🎯 *${trade.symbol} - دخول احترافي*\n\n` +
+          `💰 السعر: $${trade.entryPrice.toFixed(4)}\n` +
+          `🎛️ الثقة: ${trade.confidence.toFixed(1)}%\n` +
+          `📊 RSI: ${trade.rsi.toFixed(
+            1
+          )} | 📈 حجم: ${trade.volumeRatio.toFixed(1)}x\n` +
+          `${whaleText} حيتان\n` +
+          `🛑 الستوب: $${trade.stopLoss.toFixed(4)} (${(
+            (1 - trade.stopLoss / trade.entryPrice) *
+            100
+          ).toFixed(2)}%)\n` +
+          `🎯 الهدف: $${trade.takeProfit.toFixed(4)} (${(
+            (trade.takeProfit / trade.entryPrice - 1) *
+            100
+          ).toFixed(2)}%)\n` +
+          `📈 نسبة: ${opportunity.targets.riskRewardRatio.toFixed(2)}\n\n` +
+          `✅ *أسباب القرار:*\n${trade.reasons
+            .slice(0, 3)
+            .map((r) => `• ${r}`)
+            .join("\n")}`
+      );
+
+      this.startProfessionalMonitoring(trade);
+    } catch (error) {
+      this.sendTelegram(`❌ خطأ في التنفيذ: ${error.message}`);
+    }
+  }
+
+  // ==================== المراقبة الاحترافية ====================
+  startProfessionalMonitoring(trade) {
+    const monitor = async () => {
+      if (trade.status !== "ACTIVE") return;
+
+      const orderBook = this.orderBooks[trade.symbol];
+      if (!orderBook) return;
+
+      const currentPrice = orderBook.bids[0][0];
+
+      // تحديث أعلى سعر
+      if (currentPrice > trade.highestPrice) {
+        trade.highestPrice = currentPrice;
+      }
+
+      const currentProfit =
+        ((currentPrice - trade.entryPrice) / trade.entryPrice) * 100;
+      const netProfit = currentProfit - 0.2; // بعد العمولات
+
+      // التريلينج ستوب الذكي
+      this.updateTrailingStop(trade, currentPrice, currentProfit);
+
+      // قرار الخروج
+      const exitDecision = this.shouldExit(
+        trade,
+        currentPrice,
+        netProfit,
+        orderBook
+      );
+
+      if (exitDecision.exit) {
+        trade.status = "CLOSED";
+
+        // حفظ في قاعدة البيانات
+        await this.dbManager.saveTrade({
+          id: trade.id,
+          symbol: trade.symbol,
+          entryPrice: trade.entryPrice,
+          exitPrice: currentPrice,
+          entryTime: trade.entryTime,
+          exitTime: Date.now(),
+          pnlPercent: netProfit,
+          pnlUsd: (netProfit / 100) * trade.size,
+          confidence: trade.confidence,
+          rsiValue: trade.rsi,
+          volumeRatio: trade.volumeRatio,
+          whalePower: 0, // يمكن تعديله
+          reasons: trade.reasons.join(" | "),
+          stopLoss: trade.stopLoss,
+          takeProfit: trade.takeProfit,
+          exitReason: exitDecision.reason,
+          duration: (Date.now() - trade.entryTime) / 1000,
+        });
+
+        // الإغلاق المحلي
+        this.closeTrade(trade, currentPrice, netProfit, exitDecision.reason);
+        this.cooldowns[trade.symbol] = Date.now();
+        return;
+      }
+
+      setTimeout(monitor, 2000);
     };
 
-    fs.appendFileSync(
-      this.logFile,
-      `${new Date().toISOString()},${trade.symbol},${
-        trade.entryPrice
-      },WAITING,0%,0,${trade.whaleSize},ENTRY_OPEN,0\n`
+    setTimeout(monitor, 2000);
+  }
+
+  updateTrailingStop(trade, currentPrice, currentProfit) {
+    // تأمين نقطة التعادل أولاً
+    if (
+      currentPrice > trade.entryPrice &&
+      trade.currentStopLoss < trade.entryPrice
+    ) {
+      trade.currentStopLoss = trade.entryPrice * 1.0005;
+      trade.stopLossHistory.push({
+        price: trade.currentStopLoss,
+        time: Date.now(),
+        reason: "Breakeven Protection",
+      });
+    }
+
+    // تفعيل التريلينج بعد 0.3% ربح
+    if (currentProfit > 0.3) {
+      const distanceFromHigh =
+        (trade.highestPrice - currentPrice) / trade.highestPrice;
+
+      if (distanceFromHigh > 0.001) {
+        // إذا ابتعدنا 0.1% عن الأعلى
+        const newStopLoss = currentPrice * 0.9985; // 0.15% تحت السعر الحالي
+
+        if (newStopLoss > trade.currentStopLoss) {
+          trade.currentStopLoss = newStopLoss;
+          trade.stopLossHistory.push({
+            price: trade.currentStopLoss,
+            time: Date.now(),
+            reason: `Trailing Stop (${(distanceFromHigh * 100).toFixed(
+              2
+            )}% from high)`,
+          });
+        }
+      }
+    }
+  }
+
+  shouldExit(trade, currentPrice, netProfit, orderBook) {
+    // 1. ستوب لوز
+    if (currentPrice <= trade.currentStopLoss) {
+      return {
+        exit: true,
+        reason:
+          trade.currentStopLoss > trade.entryPrice
+            ? "TRAILING_STOP_PROFIT"
+            : "STOP_LOSS",
+      };
+    }
+
+    // 2. تحقيق الهدف
+    if (currentPrice >= trade.takeProfit) {
+      return { exit: true, reason: "TAKE_PROFIT" };
+    }
+
+    // 3. تحليل السوق الحالي
+    const currentDecision = this.calculateDecisionMatrix(
+      trade.symbol,
+      orderBook
     );
+    if (currentDecision.confidence < 40 && netProfit > 0.2) {
+      return { exit: true, reason: "MARKET_CONDITION_DETERIORATED" };
+    }
 
-    this.activeTrades.push(trade);
-    this.startSmartMonitoring(trade);
+    // 4. وقت طويل
+    if (Date.now() - trade.entryTime > CONFIG.MAX_MONITOR_TIME) {
+      return {
+        exit: true,
+        reason: netProfit >= 0 ? "TIME_LIMIT_PROFIT" : "TIME_LIMIT_LOSS",
+      };
+    }
+
+    // 5. إذا انعكس اتجاه الحيتان
+    const currentWhales = this.analyzeWhales(trade.symbol, orderBook);
+    if (currentWhales.score < 10 && netProfit > 0.1) {
+      return { exit: true, reason: "WHALES_DISAPPEARED" };
+    }
+
+    return { exit: false, reason: "" };
   }
 
-  startSmartMonitoring(trade) {
-    trade.highestNetPnl = -0.002;
-    trade.dynamicStopLoss = trade.stopLoss;
+  async closeTrade(trade, exitPrice, netPnlPercent, reason) {
+    const netPnlUsd = (netPnlPercent / 100) * trade.size;
+    const duration = (Date.now() - trade.entryTime) / 60000;
 
-    const interval = setInterval(() => {
-      const ob = this.orderBooks[trade.symbol];
-      if (!ob || trade.status !== "ACTIVE") return clearInterval(interval);
-
-      const curPrice = ob.bids[0][0];
-      const netPnl =
-        (curPrice - trade.entryPrice) / trade.entryPrice -
-        trade.fees / trade.size;
-
-      if (netPnl > trade.highestNetPnl) {
-        trade.highestNetPnl = netPnl;
-        // تأمين عند الوصول لنقطة التعادل
-        if (netPnl >= 0.0005 && trade.dynamicStopLoss < trade.entryPrice) {
-          trade.dynamicStopLoss = trade.entryPrice;
-        }
-        // تأمين ربح بسيط عند الصعود
-        if (netPnl >= 0.003) {
-          const lockedPrice = trade.entryPrice * 1.001;
-          if (trade.dynamicStopLoss < lockedPrice)
-            trade.dynamicStopLoss = lockedPrice;
-        }
-      }
-
-      let shouldExit = false;
-      let reason = "";
-      const targetPnl = trade.takeProfit / trade.entryPrice - 1 - 0.002;
-
-      // الخروج بالربح (تريلينج)
-      if (netPnl >= targetPnl && trade.highestNetPnl - netPnl > 0.0005) {
-        shouldExit = true;
-        reason = "TRAILING_PROFIT";
-      }
-      // الخروج بالستوب لوز (الحماية النهائية)
-      else if (curPrice <= trade.dynamicStopLoss) {
-        shouldExit = true;
-        reason =
-          trade.dynamicStopLoss >= trade.entryPrice
-            ? "DYNAMIC_SL_PROFIT"
-            : "STOP_LOSS";
-      }
-      // خروج اضطراري بعد 24 ساعة فقط
-      else if (Date.now() - trade.entryTime > CONFIG.MAX_MONITOR_TIME) {
-        shouldExit = true;
-        reason = "LONG_TERM_FORCE_CLOSE";
-      }
-
-      if (shouldExit) {
-        trade.status = "CLOSED";
-        this.closeTrade(trade, curPrice, netPnl, reason);
-        clearInterval(interval);
-      }
-    }, 1000);
-  }
-
-  async closeTrade(trade, price, pnl, reason) {
     this.performance.trades++;
-    this.performance.netProfit += pnl * trade.size;
-    if (pnl > 0) this.performance.wins++;
-    else this.performance.losses++;
-    const duration = (Date.now() - trade.entryTime) / 1000;
-    fs.appendFileSync(
-      this.logFile,
-      `${new Date().toISOString()},${trade.symbol},${
-        trade.entryPrice
-      },${price},${(pnl * 100).toFixed(3)}%,${(pnl * trade.size).toFixed(3)},${
-        trade.whaleSize
-      },${reason},${duration}\n`
+    this.performance.netProfit += netPnlUsd;
+    this.performance.totalConfidence += trade.confidence;
+
+    if (netPnlPercent > 0) {
+      this.performance.wins++;
+    } else {
+      this.performance.losses++;
+    }
+
+    // تسجيل في CSV
+    const log = `${new Date().toISOString()},${
+      trade.symbol
+    },${trade.entryPrice.toFixed(4)},${exitPrice.toFixed(
+      4
+    )},${netPnlPercent.toFixed(3)}%,${netPnlUsd.toFixed(
+      3
+    )},${trade.confidence.toFixed(1)},${trade.rsi.toFixed(
+      1
+    )},${trade.volumeRatio.toFixed(1)},${
+      trade.stopLossHistory.length - 1
+    },"${trade.reasons.slice(0, 2).join(" | ")}"\n`;
+    fs.appendFileSync("professional_trades.csv", log);
+
+    // إشعار الخروج
+    let emoji = "📊";
+    if (reason.includes("PROFIT")) emoji = "💰";
+    if (reason.includes("STOP_LOSS")) emoji = "🛑";
+    if (reason.includes("TAKE_PROFIT")) emoji = "🎯";
+
+    this.sendTelegram(
+      `${emoji} *${trade.symbol} - إغلاق*\n\n` +
+        `📊 ${netPnlPercent > 0 ? "+" : ""}${netPnlPercent.toFixed(2)}%\n` +
+        `💸 ${netPnlUsd > 0 ? "+" : ""}$${netPnlUsd.toFixed(2)}\n` +
+        `⏱️ ${duration.toFixed(1)} دقيقة\n` +
+        `🛑 ${trade.stopLossHistory.length - 1} حركة ستوب\n` +
+        `📝 ${this.translateReason(reason)}\n` +
+        `🎯 الثقة: ${trade.confidence.toFixed(1)}%\n` +
+        `🕐 ${new Date().toLocaleTimeString("ar-SA")}`
     );
+
     this.activeTrades = this.activeTrades.filter((t) => t.id !== trade.id);
   }
 
-  displayDashboard() {
-    console.clear();
-    const winRate =
-      this.performance.trades > 0
-        ? ((this.performance.wins / this.performance.trades) * 100).toFixed(1)
-        : "0.0";
-    console.log(`╔══════════════════════════════════════════════════════╗`);
-    console.log(
-      `║ 💰 RevenueBot | PnL: $${this.performance.netProfit.toFixed(
-        3
-      )} | Wins: ${winRate}% ║`
-    );
-    console.log(`╠══════════════════════════════════════════════════════╣`);
-    this.activeTrades.forEach((t) => {
-      const cur = this.orderBooks[t.symbol]?.bids[0][0] || t.entryPrice;
-      const netPnlPercent = (
-        ((cur - t.entryPrice) / t.entryPrice) * 100 -
-        0.2
-      ).toFixed(2);
-      console.log(
-        `║ 🚀 ${t.symbol.padEnd(9)} | Net: ${netPnlPercent.padStart(
-          5
-        )}% | Time: ${Math.floor((Date.now() - t.entryTime) / 60000)}m ║`
-      );
-    });
-    if (this.activeTrades.length === 0)
-      console.log(`║          ⏳ جاري البحث عن فرص ذهبية...               ║`);
-    console.log(`╚══════════════════════════════════════════════════════╝`);
+  translateReason(englishReason) {
+    const reasons = {
+      TRAILING_STOP_PROFIT: "تريلينج ستوب مع ربح",
+      STOP_LOSS: "وصول للستوب لوز",
+      TAKE_PROFIT: "تحقيق الهدف",
+      MARKET_CONDITION_DETERIORATED: "تدهور ظروف السوق",
+      TIME_LIMIT_PROFIT: "انتهاء الوقت مع ربح",
+      TIME_LIMIT_LOSS: "انتهاء الوقت",
+      WHALES_DISAPPEARED: "اختفاء الحيتان",
+    };
+    return reasons[englishReason] || englishReason;
   }
 
+  // ==================== WebSocket ====================
   connectWebSockets() {
     CONFIG.SYMBOLS.forEach((symbol) => {
       const ws = new WebSocket(
         `wss://stream.binance.com:9443/ws/${symbol
           .replace("/", "")
-          .toLowerCase()}@depth10@100ms`
+          .toLowerCase()}@depth20@100ms`
       );
+
       ws.on("message", (data) => {
-        const parsed = JSON.parse(data);
-        this.orderBooks[symbol] = {
-          bids: parsed.bids.map((b) => [parseFloat(b[0]), parseFloat(b[1])]),
-          asks: parsed.asks.map((a) => [parseFloat(a[0]), parseFloat(a[1])]),
-        };
+        try {
+          const parsed = JSON.parse(data);
+          this.orderBooks[symbol] = {
+            bids: parsed.bids.map((b) => [parseFloat(b[0]), parseFloat(b[1])]),
+            asks: parsed.asks.map((a) => [parseFloat(a[0]), parseFloat(a[1])]),
+          };
+        } catch (error) {}
       });
+
+      ws.on("error", () => {});
       ws.on("close", () => setTimeout(() => this.connectWebSockets(), 5000));
     });
   }
 
+  // ==================== التشغيل الرئيسي ====================
   async start() {
+    this.sendTelegram("🏦 *بدء النظام الاحترافي مع قاعدة بيانات SQLite*");
+
     await this.exchange.loadMarkets();
-    await this.updateDynamicWhaleSizes();
+
+    // تحميل البيانات التاريخية أولاً
+    this.sendTelegram("📊 *جاري تحميل البيانات التاريخية...*");
+    for (const symbol of CONFIG.SYMBOLS) {
+      const loaded = await this.loadHistoricalData(symbol);
+      if (loaded) {
+        this.sendTelegram(`✅ ${symbol}: تم تحميل البيانات التاريخية`);
+      } else {
+        this.sendTelegram(`❌ ${symbol}: فشل تحميل البيانات`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+
     this.connectWebSockets();
+
+    // تحديث البيانات كل دقيقة
+    setInterval(async () => {
+      for (const symbol of CONFIG.SYMBOLS) {
+        await this.updateMarketData(symbol);
+      }
+    }, 60000);
+
+    // البحث عن فرص كل 5 ثواني
     setInterval(() => {
-      this.displayDashboard();
-      CONFIG.SYMBOLS.forEach((s) => {
-        const opp = this.analyzeForEntry(s, this.orderBooks[s]);
+      CONFIG.SYMBOLS.forEach((symbol) => {
+        const opp = this.analyzeForEntry(symbol, this.orderBooks[symbol]);
         if (opp) this.executeTrade(opp);
       });
     }, CONFIG.UPDATE_INTERVAL);
+
+    // إرسال تقرير إحصائي كل ساعة
+    setInterval(async () => {
+      const stats = await this.dbManager.getTradeStatistics();
+      if (stats) {
+        this.sendTelegram(
+          `📈 *تقرير إحصائي كل ساعة*\n\n` +
+            `📊 إجمالي الصفقات: ${stats.total_trades}\n` +
+            `💰 الصفقات الرابحة: ${stats.winning_trades}\n` +
+            `📉 الصفقات الخاسرة: ${stats.losing_trades}\n` +
+            `📊 متوسط الربح: ${stats.avg_pnl_percent?.toFixed(2) || 0}%\n` +
+            `💸 إجمالي الربح: $${stats.total_pnl_usd?.toFixed(2) || 0}\n` +
+            `🎛️ متوسط الثقة: ${stats.avg_confidence?.toFixed(1) || 0}%\n` +
+            `⏱️ متوسط المدة: ${
+              (stats.avg_duration / 60)?.toFixed(1) || 0
+            } دقيقة`
+        );
+      }
+    }, 3600000);
+
+    this.sendTelegram("✅ *النظام يعمل بنجاح مع قاعدة بيانات SQLite*");
   }
 }
 
-new RevenueMultiTradeBot().start();
+process.on("SIGINT", async () => {
+  const bot = global.botInstance;
+  if (bot && bot.tgBot) {
+    const stats = await bot.dbManager.getTradeStatistics();
+
+    await bot.sendTelegram(
+      `🛑 *إغلاق النظام الاحترافي*\n\n` +
+        `📊 إجمالي الصفقات: ${bot.performance.trades}\n` +
+        `💰 الربح الصافي: $${bot.performance.netProfit.toFixed(2)}\n` +
+        `🏆 النجاح: ${bot.performance.wins}/${bot.performance.trades}\n` +
+        `🎛️ متوسط الثقة: ${(
+          bot.performance.totalConfidence / (bot.performance.trades || 1)
+        ).toFixed(1)}%\n\n` +
+        `💾 *بيانات قاعدة البيانات:*\n` +
+        `📈 إجمالي السجلات: ${stats?.total_trades || 0}\n` +
+        `📊 متوسط الربح: ${stats?.avg_pnl_percent?.toFixed(2) || 0}%\n` +
+        `⏱️ ${new Date().toLocaleTimeString("ar-SA")}`
+    );
+  }
+  setTimeout(() => process.exit(0), 1000);
+});
+
+const bot = new ProfessionalTradingSystem();
+global.botInstance = bot;
+bot.start();
