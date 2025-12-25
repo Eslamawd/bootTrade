@@ -29,9 +29,9 @@ const CONFIG = {
   TIMEFRAME: "5m",
 
   // إعدادات مصفوفة القرار
-  MIN_CONFIDENCE: 30,
-  MAX_RSI_ENTRY: 70,
-  MIN_VOLUME_RATIO: 0.8,
+  MIN_CONFIDENCE: 45,
+  MAX_RSI_ENTRY: 55,
+  MIN_VOLUME_RATIO: 1.2,
 };
 
 class ProfessionalTradingSystem {
@@ -516,25 +516,22 @@ class ProfessionalTradingSystem {
     };
   }
   calculateDynamicTargets(entryPrice, indicators, confidence) {
-    // 1. تقليل الـ ATR الافتراضي ليكون أكثر واقعية للمضاربة السريعة
-    const atr = indicators.atr || entryPrice * 0.008;
+    // 1. ATR متوازن
+    const atr = indicators.atr || entryPrice * 0.01;
 
-    // 2. تقليل معامل الستوب لوز (Stop Loss)
-    // بدلاً من 2.8x ATR، سنستخدم 1.5x لجعل الستوب أقرب واحترافي
-    const stopLossDistance = atr * (confidence > 70 ? 1.2 : 1.5);
+    // 2. ستوب لوز "ذكي" (توسيع المسافة قليلاً للتنفس)
+    const stopLossDistance = atr * (confidence > 80 ? 1.8 : 2.2);
     const stopLoss = entryPrice - stopLossDistance;
 
-    // 3. زيادة معامل التيك بروفيت (Take Profit)
-    // نستخدم 2.5x ATR لضمان نسبة ربح لمخاطرة (RR) أكبر من 1.5
-    const takeProfitDistance = atr * 3.0;
+    // 3. هدف طموح (لضمان ربح صافي بعد العمولات)
+    const takeProfitDistance = atr * 3.5;
     const takeProfit = entryPrice + takeProfitDistance;
 
-    // 4. تعديل حدود الحماية "الواقعية"
-    // السماح بوقف خسارة حتى 2% فقط، وجني أرباح يصل لـ 6%
-    const minStopLoss = entryPrice * 0.98;
-    const maxTakeProfit = entryPrice * 1.06;
+    // 4. حدود الحماية "الواقعية" (تعديل الأرقام)
+    const minStopLoss = entryPrice * 0.985; // ستوب لوز أقصى 1.5%
+    const maxTakeProfit = entryPrice * 1.05; // هدف أقصى 5%
 
-    // اختيار الأسعار (استخدام Math.max للستوب لضمان عدم بعده عن 2%)
+    // اختيار الأسعار الأفضل
     const finalStopLoss = Math.max(stopLoss, minStopLoss);
     const finalTakeProfit = Math.min(takeProfit, maxTakeProfit);
 
@@ -545,7 +542,7 @@ class ProfessionalTradingSystem {
       stopLoss: finalStopLoss,
       takeProfit: finalTakeProfit,
       riskRewardRatio,
-      atrBased: indicators.atr ? true : false,
+      atrBased: !!indicators.atr,
       atrValue: atr,
     };
   }
