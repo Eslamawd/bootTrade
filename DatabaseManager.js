@@ -268,6 +268,39 @@ class DatabaseManager {
       return [];
     }
   }
+  async cleanupOldData(daysToKeep = 2) {
+    try {
+      const cutOffDate = new Date();
+      cutOffDate.setDate(cutOffDate.getDate() - daysToKeep);
+      const dateString = cutOffDate.toISOString();
+
+      // مسح الشموع القديمة
+      const candleResult = await this.db.run(
+        `DELETE FROM candles WHERE timestamp < ?`,
+        [dateString]
+      );
+
+      // مسح المؤشرات الفنية القديمة
+      const indicatorResult = await this.db.run(
+        `DELETE FROM technical_indicators WHERE timestamp < ?`,
+        [dateString]
+      );
+
+      // مسح سجلات الحيتان القديمة
+      await this.db.run(`DELETE FROM whale_sightings WHERE timestamp < ?`, [
+        dateString,
+      ]);
+
+      console.log(
+        `🧹 تم تنظيف البيانات الأقدم من ${daysToKeep} يوم. (حذف ${candleResult.changes} شمعة)`
+      );
+
+      // أمر VACUUM لتقليص حجم ملف قاعدة البيانات فعلياً على القرص
+      await this.db.run(`VACUUM`);
+    } catch (error) {
+      console.error("❌ خطأ أثناء تنظيف قاعدة البيانات:", error.message);
+    }
+  }
 }
 
 module.exports = DatabaseManager;

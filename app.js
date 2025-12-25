@@ -29,9 +29,9 @@ const CONFIG = {
   TIMEFRAME: "5m",
 
   // إعدادات مصفوفة القرار
-  MIN_CONFIDENCE: 70,
-  MAX_RSI_ENTRY: 70,
-  MIN_VOLUME_RATIO: 0.8,
+  MIN_CONFIDENCE: 50,
+  MAX_RSI_ENTRY: 63,
+  MIN_VOLUME_RATIO: 1.1,
 };
 
 class ProfessionalTradingSystem {
@@ -157,32 +157,46 @@ class ProfessionalTradingSystem {
 
   async updateMarketData(symbol) {
     try {
-      // جلب آخر شمعة فقط
+      // جلب آخر 5 شموع لضمان عدم وجود فجوات
       const latestCandles = await this.exchange.fetchOHLCV(
         symbol,
         CONFIG.TIMEFRAME,
         undefined,
-        2
+        5
       );
 
       if (latestCandles && latestCandles.length > 0) {
-        const latestCandle = latestCandles[latestCandles.length - 1];
-
-        // تحديث البيانات المحلية
         if (!this.marketData[symbol]) {
           this.marketData[symbol] = { candles: [] };
         }
 
-        // إضافة الشمعة الجديدة
-        this.marketData[symbol].candles.push(latestCandle);
+        const localCandles = this.marketData[symbol].candles;
 
-        // الحفاظ على الحد الأقصى
-        if (this.marketData[symbol].candles.length > CONFIG.CANDLE_LIMIT) {
-          this.marketData[symbol].candles.shift();
+        for (const candle of latestCandles) {
+          const timestamp = candle[0];
+
+          // التأكد أن الشمعة ليست موجودة مسبقاً في المصفوفة المحلية
+          const existsLocally = localCandles.some((c) => c[0] === timestamp);
+
+          if (!existsLocally) {
+            // 1. إضافة للمصفوفة المحلية
+            localCandles.push(candle);
+
+            // 2. الحفاظ على الحد الأقصى (CANDLE_LIMIT)
+            if (localCandles.length > CONFIG.CANDLE_LIMIT) {
+              localCandles.shift();
+            }
+
+            // 3. حفظ في قاعدة البيانات (سيقوم INSERT OR REPLACE بالباقي)
+            await this.dbManager.saveCandle(symbol, candle, CONFIG.TIMEFRAME);
+
+            console.log(
+              `✅ ${symbol}: تم سد فجوة/إضافة شمعة جديدة [${new Date(
+                timestamp
+              ).toLocaleTimeString()}]`
+            );
+          }
         }
-
-        // حفظ في قاعدة البيانات
-        await this.dbManager.saveCandle(symbol, latestCandle, CONFIG.TIMEFRAME);
 
         this.marketData[symbol].lastUpdate = Date.now();
         return true;
@@ -192,7 +206,6 @@ class ProfessionalTradingSystem {
     }
     return false;
   }
-
   // ==================== حساب المؤشرات الفنية من البيانات التاريخية ====================
   calculateTechnicalIndicators(symbol) {
     if (!this.marketData[symbol] || !this.marketData[symbol].candles) {
@@ -315,7 +328,7 @@ class ProfessionalTradingSystem {
     const warnings = [];
 
     // 1. RSI Analysis (25 نقطة)
-    if (indicators.rsi >= 40 && indicators.rsi <= 60) {
+    if (indicators.rsi >= 40 && indicators.rsi <= CONFIG.MAX_RSI_ENTRY) {
       totalScore += 25;
       reasons.push(`📈 RSI مثالي (${indicators.rsi.toFixed(1)})`);
     } else if (indicators.rsi < 40) {
@@ -333,7 +346,7 @@ class ProfessionalTradingSystem {
     if (indicators.volumeRatio >= 1.5) {
       totalScore += 20;
       reasons.push(`📊 انفجار حجم (${indicators.volumeRatio.toFixed(1)}x)`);
-    } else if (indicators.volumeRatio >= 1.2) {
+    } else if (indicators.volumeRatio >= 1.1) {
       totalScore += 15;
       reasons.push(`📈 حجم مرتفع (${indicators.volumeRatio.toFixed(1)}x)`);
     } else if (indicators.volumeRatio < 0.8) {
@@ -392,7 +405,7 @@ class ProfessionalTradingSystem {
     if (!orderBook || !orderBook.bids)
       return { score: 0, reasons: [], warnings: [], whales: [] };
 
-    // حساب العتبة: إما 0.5% من متوسط حجم التداول أو 20 ألف دولار كحد أدنى
+    // حساب العتبة الديناميكية
     const volData =
       this.volumeHistory && this.volumeHistory[symbol]
         ? this.volumeHistory[symbol].avgVolume
@@ -405,7 +418,7 @@ class ProfessionalTradingSystem {
     const warnings = [];
     const whales = [];
 
-    // فحص أعمق للأوردر بوك (حتى 20 مستوى)
+    // فحص الأوردر بوك
     for (let i = 0; i < Math.min(20, orderBook.bids.length); i++) {
       const value = orderBook.bids[i][0] * orderBook.bids[i][1];
       if (value >= dynamicThreshold) {
@@ -417,7 +430,7 @@ class ProfessionalTradingSystem {
       }
     }
 
-    // توزيع النقاط بناءً على "وزن" الحيتان
+    // توزيع النقاط
     if (whales.length >= 3) {
       score += 30;
       reasons.push(
@@ -430,12 +443,26 @@ class ProfessionalTradingSystem {
       reasons.push(`🐋 رصد ${whales.length} حوت نشط`);
     }
 
-    // جدار الحماية (Support Wall)
-    const frontWhales = whales.filter((w) => w.position <= 5);
-    if (frontWhales.length >= 2) {
+    if (whales.filter((w) => w.position <= 5).length >= 2) {
       score += 15;
       reasons.push(`🛡️ جدار حماية قوي في أول 5 مستويات`);
     }
+
+    // --- الربط مع قاعدة البيانات (الجزء الجديد) ---
+    const whaleData = {
+      count: whales.length,
+      largestValue:
+        whales.length > 0 ? Math.max(...whales.map((w) => w.value)) : 0,
+      avgValue:
+        whales.length > 0
+          ? whales.reduce((a, b) => a + b.value, 0) / whales.length
+          : 0,
+      positions: whales.map((w) => w.position),
+      powerScore: score,
+    };
+
+    // استدعاء الحفظ (بدون انتظار await لعدم تعطيل سرعة التحليل)
+    this.dbManager.saveWhaleSighting(symbol, whaleData).catch((e) => {});
 
     return { score, reasons, warnings, whales, dynamicThreshold };
   }
@@ -877,6 +904,10 @@ class ProfessionalTradingSystem {
   // ==================== التشغيل الرئيسي ====================
   async start() {
     this.sendTelegram("🏦 *بدء النظام الاحترافي مع قاعدة بيانات SQLite*");
+    // تشغيل تنظيف قاعدة البيانات كل 24 ساعة
+    setInterval(async () => {
+      await this.dbManager.cleanupOldData(2); // نحتفظ بآخر يومين فقط من الشموع والمؤشرات
+    }, 24 * 60 * 60 * 1000);
 
     await this.exchange.loadMarkets();
 
