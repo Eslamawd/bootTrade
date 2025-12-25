@@ -870,48 +870,49 @@ class ProfessionalTradingSystem {
   }
 
   async sendMonitoringReport() {
-    let report = "🔍 *تقرير المراقبة اللحظي (أقوى الفرص)*\n\n";
+    try {
+      let report = "🔍 *تقرير الرادار اللحظي*\n\n";
+      const validOpportunities = [];
 
-    // ترتيب العملات بناءً على نسبة الثقة (Confidence) من الأعلى للأقل
-    const sortedSymbols = CONFIG.SYMBOLS.map((symbol) => {
-      const orderBook = this.orderBooks[symbol];
-      if (!orderBook) return { symbol, confidence: 0 };
-      const decision = this.calculateDecisionMatrix(symbol, orderBook);
-      return { symbol, confidence: decision.confidence, decision };
-    }).sort((a, b) => b.confidence - a.confidence);
+      for (const symbol of CONFIG.SYMBOLS) {
+        const orderBook = this.orderBooks[symbol];
+        if (!orderBook) continue;
 
-    // اختيار أفضل 3 عملات حالياً
-    const top3 = sortedSymbols.slice(0, 3);
-
-    top3.forEach((item, index) => {
-      const { symbol, confidence, decision } = item;
-      const ind = decision.indicators;
-      const whaleIcon =
-        decision.whaleAnalysis.score > 20 ? "🐋 قوية" : "🐟 عادية";
-
-      report += `${index + 1}. *${symbol}* 💹\n`;
-      report += `    • الثقة: ${confidence.toFixed(1)}%\n`;
-      report += `    • RSI: ${ind ? ind.rsi.toFixed(1) : "N/A"}\n`;
-      report += `    • سيولة الحيتان: ${whaleIcon}\n`;
-      report += `    • الاتجاه: ${
-        ind && ind.sma50 > ind.sma200 ? "📈 صاعد" : "📉 هابط"
-      }\n`;
-
-      // حساب القرب من الدخول
-      const gap = CONFIG.MIN_CONFIDENCE - confidence;
-      if (gap <= 0) {
-        report += `    • الحالة: 🟢 جاهزة للتنفيذ فوراً!\n`;
-      } else {
-        report += `    • القرب من الدخول: باقي ${gap.toFixed(1)}% ثقة\n`;
+        const decision = this.calculateDecisionMatrix(symbol, orderBook);
+        // التأكد من وجود البيانات قبل القراءة
+        if (decision && decision.indicators) {
+          validOpportunities.push({
+            symbol,
+            confidence: decision.confidence,
+            decision,
+          });
+        }
       }
-      report += `----------------------------\n`;
-    });
 
-    if (this.activeTrades.length > 0) {
-      report += `\n💼 *الصفقات المفتوحة:* ${this.activeTrades.length}/${CONFIG.MAX_CONCURRENT_TRADES}`;
+      if (validOpportunities.length === 0) {
+        return this.sendTelegram("⏳ جاري تجميع بيانات كافية للرادار...");
+      }
+
+      // ترتيب حسب الثقة
+      validOpportunities.sort((a, b) => b.confidence - a.confidence);
+
+      validOpportunities.slice(0, 3).forEach((item, index) => {
+        const { symbol, confidence, decision } = item;
+        const ind = decision.indicators;
+        report += `${index + 1}. *${symbol}* (${confidence.toFixed(1)}%)\n`;
+        report += `   • RSI: ${ind.rsi.toFixed(
+          1
+        )} | حجم: ${ind.volumeRatio.toFixed(1)}x\n`;
+        report += `   • الحالة: ${
+          confidence >= CONFIG.MIN_CONFIDENCE ? "🟢 جاهز" : "🟡 مراقبة"
+        }\n`;
+        report += `------------------\n`;
+      });
+
+      this.sendTelegram(report);
+    } catch (error) {
+      console.error("❌ خطأ في إرسال التقرير:", error.message);
     }
-
-    this.sendTelegram(report);
   }
 
   // ==================== WebSocket ====================
