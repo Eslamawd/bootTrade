@@ -10,7 +10,7 @@ class DatabaseManager {
 
   async initDatabase() {
     this.db = await open({
-      filename: path.join(__dirname, "trading_system.sqlite"),
+      filename: path.join(__dirname, "trading_system2.sqlite"),
       driver: sqlite3.Database,
     });
 
