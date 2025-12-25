@@ -516,26 +516,26 @@ class ProfessionalTradingSystem {
     };
   }
   calculateDynamicTargets(entryPrice, indicators, confidence) {
-    // استخدام ATR لتحديد المستويات - رفعنا النسبة البديلة لـ 1.5% للتنفس
-    const atr = indicators.atr || entryPrice * 0.015;
+    // 1. تقليل الـ ATR الافتراضي ليكون أكثر واقعية للمضاربة السريعة
+    const atr = indicators.atr || entryPrice * 0.008;
 
-    // 1. ستوب لوز "أرجل": وسعنا المعاملات (2.0 و 2.8)
-    // لو الثقة عالية بنسيب مساحة 2x ATR، لو الثقة مهزوزة بنسيب 2.8x عشان السعر بيبقى متذبذب
-    const stopLossDistance = atr * (confidence > 80 ? 2.0 : 2.8);
+    // 2. تقليل معامل الستوب لوز (Stop Loss)
+    // بدلاً من 2.8x ATR، سنستخدم 1.5x لجعل الستوب أقرب واحترافي
+    const stopLossDistance = atr * (confidence > 70 ? 1.2 : 1.5);
     const stopLoss = entryPrice - stopLossDistance;
 
-    // 2. تيك بروفيت طموح: عشان يعوض الستوب الواسع
-    const takeProfitDistance = atr * (confidence > 80 ? 4.0 : 3.5);
+    // 3. زيادة معامل التيك بروفيت (Take Profit)
+    // نستخدم 2.5x ATR لضمان نسبة ربح لمخاطرة (RR) أكبر من 1.5
+    const takeProfitDistance = atr * 3.0;
     const takeProfit = entryPrice + takeProfitDistance;
 
-    // 3. حدود حماية "واقعية":
-    // وسعنا الحد الأدنى للستوب لـ 3% بدل 1% عشان الـ ATR ياخد راحته
-    const minStopLoss = entryPrice * 0.97;
-    // رفعنا سقف الطموح لـ 5% ربح بدل 3%
-    const maxTakeProfit = entryPrice * 1.05;
+    // 4. تعديل حدود الحماية "الواقعية"
+    // السماح بوقف خسارة حتى 2% فقط، وجني أرباح يصل لـ 6%
+    const minStopLoss = entryPrice * 0.98;
+    const maxTakeProfit = entryPrice * 1.06;
 
-    // اختيار السعر الأنسب (الأبعد في الستوب عشان التنفس)
-    const finalStopLoss = Math.min(stopLoss, minStopLoss); // هنا استخدمنا min عشان نضمن إنه "أرجل" وأبعد
+    // اختيار الأسعار (استخدام Math.max للستوب لضمان عدم بعده عن 2%)
+    const finalStopLoss = Math.max(stopLoss, minStopLoss);
     const finalTakeProfit = Math.min(takeProfit, maxTakeProfit);
 
     const riskRewardRatio =
