@@ -29,9 +29,9 @@ const CONFIG = {
   TIMEFRAME: "5m",
 
   // إعدادات مصفوفة القرار
-  MIN_CONFIDENCE: 40,
+  MIN_CONFIDENCE: 30,
   MAX_RSI_ENTRY: 70,
-  MIN_VOLUME_RATIO: 1.0,
+  MIN_VOLUME_RATIO: 0.8,
 };
 
 class ProfessionalTradingSystem {
@@ -305,15 +305,15 @@ class ProfessionalTradingSystem {
 
     // 1. RSI Analysis (25 نقطة)
     if (indicators.rsi >= 40 && indicators.rsi <= CONFIG.MAX_RSI_ENTRY) {
-      totalScore += 25;
+      totalScore += 30;
       reasons.push(`📈 RSI مثالي (${indicators.rsi.toFixed(1)})`);
     } else if (indicators.rsi < 40) {
       totalScore += 15;
       reasons.push(`📉 RSI منخفض (${indicators.rsi.toFixed(1)}) - فرصة`);
-    } else if (indicators.rsi > 60 && indicators.rsi <= 65) {
-      totalScore += 10;
+    } else if (indicators.rsi > 72 && indicators.rsi <= 80) {
+      totalScore += 5;
       warnings.push(`⚠️ RSI مرتفع (${indicators.rsi.toFixed(1)})`);
-    } else if (indicators.rsi > 65) {
+    } else if (indicators.rsi > 75) {
       totalScore -= 20;
       warnings.push(`🚨 RSI متشبع شراء (${indicators.rsi.toFixed(1)})`);
     }
@@ -492,7 +492,7 @@ class ProfessionalTradingSystem {
       indicators,
       decision.confidence
     );
-    if (targets.riskRewardRatio < 1.5) {
+    if (targets.riskRewardRatio < 0.8) {
       console.log(
         `⏹️ ${symbol}: نسبة ربح/مخاطرة ضعيفة (${targets.riskRewardRatio.toFixed(
           2
