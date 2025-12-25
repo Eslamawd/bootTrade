@@ -109,7 +109,7 @@ class ProfessionalTradingSystem {
             c.close,
             c.volume,
           ])
-          .reverse(); // عكس الترتيب لأن قاعدة البيانات تعطينا الأحدث أولاً
+          .sort((a, b) => a[0] - b[0]);
 
         this.marketData[symbol] = {
           candles,
@@ -145,6 +145,7 @@ class ProfessionalTradingSystem {
         };
 
         console.log(`✅ ${symbol}: تم جلب وحفظ ${freshCandles.length} شمعة`);
+        console.log(`${freshCandles}`);
         return true;
       }
 
@@ -154,10 +155,8 @@ class ProfessionalTradingSystem {
       return false;
     }
   }
-
   async updateMarketData(symbol) {
     try {
-      // جلب آخر 5 شموع لضمان عدم وجود فجوات
       const latestCandles = await this.exchange.fetchOHLCV(
         symbol,
         CONFIG.TIMEFRAME,
@@ -170,35 +169,34 @@ class ProfessionalTradingSystem {
           this.marketData[symbol] = { candles: [] };
         }
 
-        const localCandles = this.marketData[symbol].candles;
+        let localCandles = this.marketData[symbol].candles;
 
         for (const candle of latestCandles) {
           const timestamp = candle[0];
+          const index = localCandles.findIndex((c) => c[0] === timestamp);
 
-          // التأكد أن الشمعة ليست موجودة مسبقاً في المصفوفة المحلية
-          const existsLocally = localCandles.some((c) => c[0] === timestamp);
-
-          if (!existsLocally) {
-            // 1. إضافة للمصفوفة المحلية
+          if (index !== -1) {
+            // تحديث الشمعة إذا كانت موجودة (لتحديث الحجم والسعر الحالي)
+            localCandles[index] = candle;
+          } else {
+            // إضافة شمعة جديدة
             localCandles.push(candle);
-
-            // 2. الحفاظ على الحد الأقصى (CANDLE_LIMIT)
-            if (localCandles.length > CONFIG.CANDLE_LIMIT) {
-              localCandles.shift();
-            }
-
-            // 3. حفظ في قاعدة البيانات (سيقوم INSERT OR REPLACE بالباقي)
-            await this.dbManager.saveCandle(symbol, candle, CONFIG.TIMEFRAME);
-
-            console.log(
-              `✅ ${symbol}: تم سد فجوة/إضافة شمعة جديدة [${new Date(
-                timestamp
-              ).toLocaleTimeString()}]`
-            );
           }
         }
 
+        // إعادة الترتيب والحفاظ على الحد الأقصى
+        localCandles.sort((a, b) => a[0] - b[0]);
+        if (localCandles.length > CONFIG.CANDLE_LIMIT) {
+          localCandles = localCandles.slice(-CONFIG.CANDLE_LIMIT);
+        }
+
+        this.marketData[symbol].candles = localCandles;
         this.marketData[symbol].lastUpdate = Date.now();
+
+        // حفظ في الداتا بيز
+        for (const candle of latestCandles) {
+          await this.dbManager.saveCandle(symbol, candle, CONFIG.TIMEFRAME);
+        }
         return true;
       }
     } catch (error) {
@@ -214,8 +212,11 @@ class ProfessionalTradingSystem {
     const candles = this.marketData[symbol].candles;
     if (candles.length < 50) return null;
 
-    // فصل البيانات مع استبعاد الشمعة الأخيرة "غير المكتملة" للحصول على دقة 100%
-    const completedCandles = candles.slice(0, -1);
+    // 1. ضمان الترتيب الصحيح للبيانات قبل أي حسابات
+    const sortedCandles = [...candles].sort((a, b) => a[0] - b[0]);
+
+    // 2. استبعاد الشمعة الحالية "قيد التكوين" لضمان دقة الحجم
+    const completedCandles = sortedCandles.slice(0, -1);
 
     const closes = completedCandles.map((c) => c[4]);
     const highs = completedCandles.map((c) => c[2]);
@@ -223,11 +224,11 @@ class ProfessionalTradingSystem {
     const volumes = completedCandles.map((c) => c[5]);
 
     try {
-      // 1. حساب الـ RSI لآخر شمعة مغلقة
+      // حساب RSI
       const rsiValues = TI.RSI.calculate({ values: closes, period: 14 });
       const currentRSI = rsiValues[rsiValues.length - 1];
 
-      // 2. حساب ATR
+      // حساب ATR
       const atrValues = TI.ATR.calculate({
         high: highs,
         low: lows,
@@ -236,15 +237,24 @@ class ProfessionalTradingSystem {
       });
       const currentATR = atrValues[atrValues.length - 1];
 
-      // 3. تحليل الحجم (Volume) - المقارنة الحقيقية
+      // --- حساب الحجم بدقة فائقة ---
       const volumeMA20 = TI.SMA.calculate({ values: volumes, period: 20 });
-      const currentVolumeMA = volumeMA20[volumeMA20.length - 1];
-      const lastCompletedVolume = volumes[volumes.length - 1];
+      const currentVolumeMA = volumeMA20[volumeMA20.length - 1] || 1; // حماية من القسمة على صفر
+      const lastCompletedVolume = volumes[volumes.length - 1] || 0;
 
-      // النسبة الآن ستكون دقيقة لأننا نقارن شمعة كاملة بمتوسط شموع كاملة
-      const volumeRatio = lastCompletedVolume / (currentVolumeMA || 1);
+      // النسبة الحقيقية
+      const volumeRatio = lastCompletedVolume / currentVolumeMA;
 
-      // باقي المؤشرات (SMA, MACD, Bollinger) باستخدام closes
+      // طباعة تصحيحية تظهر فقط في الـ logs إذا كان الحجم مشكوك فيه
+      if (volumeRatio < 0.2) {
+        console.log(
+          `⚠️ [DEBUG] ${symbol}: حجم ضعيف جداً! (آخر حجم: ${lastCompletedVolume.toFixed(
+            0
+          )}, المتوسط: ${currentVolumeMA.toFixed(0)})`
+        );
+      }
+
+      // باقي المؤشرات
       const sma50Values = TI.SMA.calculate({ values: closes, period: 50 });
       const sma200Values = TI.SMA.calculate({ values: closes, period: 200 });
       const lastMACD = TI.MACD.calculate({
@@ -262,7 +272,7 @@ class ProfessionalTradingSystem {
         stdDev: 2,
       }).pop();
 
-      const indicators = {
+      return {
         rsi: currentRSI,
         atr: currentATR,
         sma50: sma50Values.pop(),
@@ -274,26 +284,14 @@ class ProfessionalTradingSystem {
         macdSignal: lastMACD?.signal || 0,
         macdHistogram: lastMACD?.histogram || 0,
         bollingerUpper: lastBB?.upper || 0,
-        bollingerMiddle: lastBB?.middle || 0,
         bollingerLower: lastBB?.lower || 0,
         timestamp: Date.now(),
       };
-
-      // حفظ للتحليل لاحقاً
-      this.dbManager.saveTechnicalIndicators(symbol, indicators);
-
-      if (!this.volumeHistory) this.volumeHistory = {};
-      this.volumeHistory[symbol] = {
-        avgVolume: currentVolumeMA * closes[closes.length - 1],
-      };
-
-      return indicators;
     } catch (error) {
       console.error(`❌ خطأ في حساب المؤشرات لـ ${symbol}:`, error.message);
       return null;
     }
   }
-
   // ==================== مصفوفة القرار المحدثة ====================
   calculateDecisionMatrix(symbol, orderBook) {
     const indicators = this.calculateTechnicalIndicators(symbol);
@@ -658,7 +656,7 @@ class ProfessionalTradingSystem {
 
       const currentPrice = orderBook.bids[0][0];
 
-      // تحديث أعلى سعر
+      // 1. تحديث أعلى سعر وصل له السعر أثناء الصفقة
       if (currentPrice > trade.highestPrice) {
         trade.highestPrice = currentPrice;
       }
@@ -667,10 +665,14 @@ class ProfessionalTradingSystem {
         ((currentPrice - trade.entryPrice) / trade.entryPrice) * 100;
       const netProfit = currentProfit - 0.2; // بعد العمولات
 
-      // التريلينج ستوب الذكي
-      this.updateTrailingStop(trade, currentPrice, currentProfit);
+      // 2. جلب ATR اللحظي لاستخدامه في التريلينج ستوب
+      const currentIndicators = this.calculateTechnicalIndicators(trade.symbol);
+      const activeATR = currentIndicators ? currentIndicators.atr : trade.atr;
 
-      // قرار الخروج
+      // 3. التريلينج ستوب المطور المعتمد على ATR
+      this.updateTrailingStop(trade, currentPrice, currentProfit, activeATR);
+
+      // 4. قرار الخروج
       const exitDecision = this.shouldExit(
         trade,
         currentPrice,
@@ -694,7 +696,7 @@ class ProfessionalTradingSystem {
           confidence: trade.confidence,
           rsiValue: trade.rsi,
           volumeRatio: trade.volumeRatio,
-          whalePower: 0, // يمكن تعديله
+          whalePower: 0,
           reasons: trade.reasons.join(" | "),
           stopLoss: trade.stopLoss,
           takeProfit: trade.takeProfit,
@@ -702,7 +704,7 @@ class ProfessionalTradingSystem {
           duration: (Date.now() - trade.entryTime) / 1000,
         });
 
-        // الإغلاق المحلي
+        // الإغلاق المحلي والإشعار
         this.closeTrade(trade, currentPrice, netProfit, exitDecision.reason);
         this.cooldowns[trade.symbol] = Date.now();
         return;
@@ -714,70 +716,68 @@ class ProfessionalTradingSystem {
     setTimeout(monitor, 2000);
   }
 
-  updateTrailingStop(trade, currentPrice, currentProfit) {
-    // تأمين نقطة التعادل أولاً
-    if (
-      currentPrice > trade.entryPrice &&
-      trade.currentStopLoss < trade.entryPrice
-    ) {
-      trade.currentStopLoss = trade.entryPrice * 1.0005;
+  updateTrailingStop(trade, currentPrice, currentProfit, activeATR) {
+    // 1. تأمين نقطة التعادل (Breakeven)
+    // بمجرد وصول الربح لـ 0.3%، ننقل الستوب لوز لمنطقة الدخول
+    if (currentProfit > 0.3 && trade.currentStopLoss < trade.entryPrice) {
+      trade.currentStopLoss = trade.entryPrice * 1.0005; // الدخول + عمولة بسيطة
       trade.stopLossHistory.push({
         price: trade.currentStopLoss,
         time: Date.now(),
-        reason: "Breakeven Protection",
+        reason: "ATR-Breakeven Protection",
       });
     }
 
-    // تفعيل التريلينج بعد 0.3% ربح
-    if (currentProfit > 0.3) {
-      const distanceFromHigh =
-        (trade.highestPrice - currentPrice) / trade.highestPrice;
+    // 2. تفعيل التريلينج المعتمد على ATR
+    // سنبدأ في ملاحقة السعر بعد تحقيق ربح بسيط (مثلاً 0.4%)
+    if (currentProfit > 0.4) {
+      // نستخدم معامل 2.0x ATR للملاحقة.
+      // السعر الجديد للستوب = السعر الحالي - (2 * ATR)
+      const atrTrailingStopPrice = currentPrice - activeATR * 2.0;
 
-      if (distanceFromHigh > 0.001) {
-        // إذا ابتعدنا 0.1% عن الأعلى
-        const newStopLoss = currentPrice * 0.9985; // 0.15% تحت السعر الحالي
-
-        if (newStopLoss > trade.currentStopLoss) {
-          trade.currentStopLoss = newStopLoss;
-          trade.stopLossHistory.push({
-            price: trade.currentStopLoss,
-            time: Date.now(),
-            reason: `Trailing Stop (${(distanceFromHigh * 100).toFixed(
-              2
-            )}% from high)`,
-          });
-        }
+      // الحماية: نحدث الستوب لوز فقط إذا كان السعر الجديد "أعلى" من الحالي
+      // (عشان الستوب يفضل يرفع لفوق وما ينزلش تحت أبداً)
+      if (atrTrailingStopPrice > trade.currentStopLoss) {
+        trade.currentStopLoss = atrTrailingStopPrice;
+        trade.stopLossHistory.push({
+          price: trade.currentStopLoss,
+          time: Date.now(),
+          reason: `ATR-Trailing (ATR: ${activeATR.toFixed(4)})`,
+        });
       }
     }
   }
 
   shouldExit(trade, currentPrice, netProfit, orderBook) {
-    // 1. ستوب لوز
+    // 1. الخروج بناءً على الستوب لوز (سواء الأساسي أو الـ ATR Trailing المحدث)
     if (currentPrice <= trade.currentStopLoss) {
       return {
         exit: true,
         reason:
           trade.currentStopLoss > trade.entryPrice
-            ? "TRAILING_STOP_PROFIT"
+            ? "ATR_TRAILING_STOP_PROFIT" // تم تحديث المسمى ليعكس استخدام ATR
             : "STOP_LOSS",
       };
     }
 
-    // 2. تحقيق الهدف
+    // 2. تحقيق الهدف الأساسي (Take Profit)
+    // ملاحظة: مع وجود ATR Trailing، يمكننا أحياناً إلغاء هذا الشرط لترك الربح ينمو،
+    // لكن للحفاظ على الأمان، سنبقي عليه كهدف نهائي.
     if (currentPrice >= trade.takeProfit) {
       return { exit: true, reason: "TAKE_PROFIT" };
     }
 
-    // 3. تحليل السوق الحالي
+    // 3. تحليل السوق الحالي (Decision Matrix)
+    // إذا انخفضت الثقة تحت 40%، نخرج فوراً طالما نحن في منطقة ربح (صافي بعد العمولات)
     const currentDecision = this.calculateDecisionMatrix(
       trade.symbol,
       orderBook
     );
-    if (currentDecision.confidence < 40 && netProfit > 0.2) {
+    if (currentDecision.confidence < 40 && netProfit > 0) {
       return { exit: true, reason: "MARKET_CONDITION_DETERIORATED" };
     }
 
-    // 4. وقت طويل
+    // 4. إدارة الوقت (Time-Based Exit)
     if (Date.now() - trade.entryTime > CONFIG.MAX_MONITOR_TIME) {
       return {
         exit: true,
@@ -785,7 +785,8 @@ class ProfessionalTradingSystem {
       };
     }
 
-    // 5. إذا انعكس اتجاه الحيتان
+    // 5. مراقبة سيولة الحيتان (Whale Activity)
+    // إذا اختفت طلبات الشراء الكبيرة (الدعم) ونحن في ربح بسيط، نخرج لتجنب الانعكاس
     const currentWhales = this.analyzeWhales(trade.symbol, orderBook);
     if (currentWhales.score < 10 && netProfit > 0.1) {
       return { exit: true, reason: "WHALES_DISAPPEARED" };
