@@ -29,9 +29,9 @@ const CONFIG = {
   TIMEFRAME: "5m",
 
   // إعدادات مصفوفة القرار
-  MIN_CONFIDENCE: 50,
-  MAX_RSI_ENTRY: 63,
-  MIN_VOLUME_RATIO: 1.1,
+  MIN_CONFIDENCE: 40,
+  MAX_RSI_ENTRY: 70,
+  MIN_VOLUME_RATIO: 1.0,
 };
 
 class ProfessionalTradingSystem {
