@@ -19,7 +19,7 @@ const CONFIG = {
     "DOT/USDT",
     "LTC/USDT",
   ],
-  MAX_CONCURRENT_TRADES: 3,
+  MAX_CONCURRENT_TRADES: 2,
   UPDATE_INTERVAL: 5000, // أبطأ قليلاً لإعطاء فرصة لتحليل البيانات
   MAX_MONITOR_TIME: 7200000, // ساعتين كحد أقصى
   COOLDOWN_TIME: 300000, // 5 دقائق
@@ -29,9 +29,9 @@ const CONFIG = {
   TIMEFRAME: "5m",
 
   // إعدادات مصفوفة القرار
-  MIN_CONFIDENCE: 45,
+  MIN_CONFIDENCE: 60,
   MAX_RSI_ENTRY: 55,
-  MIN_VOLUME_RATIO: 1.2,
+  MIN_VOLUME_RATIO: 1.5,
 };
 
 class ProfessionalTradingSystem {
@@ -515,25 +515,34 @@ class ProfessionalTradingSystem {
       entryTime: Date.now(),
     };
   }
+
   calculateDynamicTargets(entryPrice, indicators, confidence) {
-    // 1. ATR متوازن
-    const atr = indicators.atr || entryPrice * 0.01;
+    // 1. حساب ATR (متوسط حركة السعر) أو استبداله بـ 0.8% كحماية
+    const atr = indicators.atr || entryPrice * 0.008;
 
-    // 2. ستوب لوز "ذكي" (توسيع المسافة قليلاً للتنفس)
-    const stopLossDistance = atr * (confidence > 80 ? 1.8 : 2.2);
+    // 2. معامل المسافة بناءً على الثقة (Confidence)
+    // إذا كانت الثقة عالية، نقرب الستوب قليلاً. إذا كانت متوسطة، نوسعه.
+    const multiplier = confidence > 75 ? 2.2 : 2.8;
+    const stopLossDistance = atr * multiplier;
+
+    // 3. حساب الستوب لوز والهدف المبدئي
     const stopLoss = entryPrice - stopLossDistance;
+    // جعل الهدف دائماً 2.2 ضعف المخاطرة لضمان ربحية طويلة الأمد
+    const takeProfit = entryPrice + stopLossDistance * 2.2;
 
-    // 3. هدف طموح (لضمان ربح صافي بعد العمولات)
-    const takeProfitDistance = atr * 3.5;
-    const takeProfit = entryPrice + takeProfitDistance;
+    // 4. حدود الحماية الصارمة (نسب مئوية)
+    const MIN_SL_PERCENT = 0.008; // حد أدنى للستوب 0.8% (للتنفس)
+    const MIN_TP_PERCENT = 0.015; // حد أدنى للهدف 1.5% (للربح بعد العمولات)
 
-    // 4. حدود الحماية "الواقعية" (تعديل الأرقام)
-    const minStopLoss = entryPrice * 0.985; // ستوب لوز أقصى 1.5%
-    const maxTakeProfit = entryPrice * 1.05; // هدف أقصى 5%
+    // تطبيق الحدود:
+    // الستوب لوز لا يجب أن يكون أقرب من 0.8%
+    const finalStopLoss = Math.min(stopLoss, entryPrice * (1 - MIN_SL_PERCENT));
 
-    // اختيار الأسعار الأفضل
-    const finalStopLoss = Math.max(stopLoss, minStopLoss);
-    const finalTakeProfit = Math.min(takeProfit, maxTakeProfit);
+    // الهدف لا يجب أن يكون أقل من 1.5%
+    const finalTakeProfit = Math.max(
+      takeProfit,
+      entryPrice * (1 + MIN_TP_PERCENT)
+    );
 
     const riskRewardRatio =
       (finalTakeProfit - entryPrice) / (entryPrice - finalStopLoss);
