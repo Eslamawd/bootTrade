@@ -570,7 +570,7 @@ class ProfessionalTradingSystem {
         console.log("⚠️ رصيد غير كافي لفتح صفقة حقيقية");
         return;
       }
-      const tradeSize = myBalance * 0.99; // حجم ثابت للبداية
+      const tradeSize = myBalance / CONFIG.MAX_CONCURRENT_TRADES;
 
       const trade = {
         id: `TRADE_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
@@ -749,32 +749,46 @@ class ProfessionalTradingSystem {
   }
 
   shouldExit(trade, currentPrice, netProfit, orderBook) {
-    // 1. الخروج بناءً على الستوب لوز (سواء الأساسي أو الـ ATR Trailing المحدث)
+    // 1. الخروج بناءً على الستوب لوز (المحرك بواسطة ATR)
+    // هذا الشرط هو الذي سيخرجنا بربح إذا تجاوزنا الهدف ثم بدأ السعر بالانعكاس
     if (currentPrice <= trade.currentStopLoss) {
       return {
         exit: true,
         reason:
           trade.currentStopLoss > trade.entryPrice
-            ? "ATR_TRAILING_STOP_PROFIT" // تم تحديث المسمى ليعكس استخدام ATR
+            ? "ATR_TRAILING_STOP_PROFIT"
             : "STOP_LOSS",
       };
     }
 
-    // 2. تحقيق الهدف الأساسي (Take Profit)
-    // ملاحظة: مع وجود ATR Trailing، يمكننا أحياناً إلغاء هذا الشرط لترك الربح ينمو،
-    // لكن للحفاظ على الأمان، سنبقي عليه كهدف نهائي.
+    // 2. منطق تجاوز الهدف (Let Profits Run)
     if (currentPrice >= trade.takeProfit) {
-      return { exit: true, reason: "TAKE_PROFIT" };
+      // بدلاً من الخروج، نقوم بـ "حجز" الربح ورفع السقف
+      // نضع ستوب لوز جديد قريب جداً (مثلاً نصف مسافة ATR تحت السعر الحالي)
+      const tightStop = currentPrice - trade.atr * 0.5;
+
+      if (tightStop > trade.currentStopLoss) {
+        trade.currentStopLoss = tightStop;
+        // نرفع الهدف ليكون أعلى بـ 2x ATR من السعر الحالي لنعطي مساحة للنمو
+        trade.takeProfit = currentPrice + trade.atr * 2;
+
+        console.log(
+          `🚀 ${
+            trade.symbol
+          }: تم تجاوز الهدف! جاري ملاحقة السعر عند ${currentPrice.toFixed(4)}`
+        );
+        // ملاحظة: لا نرسل { exit: true } هنا لكي تستمر العملية
+      }
     }
 
-    // 3. تحليل السوق الحالي (Decision Matrix)
-    // إذا انخفضت الثقة تحت 40%، نخرج فوراً طالما نحن في منطقة ربح (صافي بعد العمولات)
+    // 3. تحليل السوق اللحظي (Decision Matrix)
     const currentDecision = this.calculateDecisionMatrix(
       trade.symbol,
       orderBook
     );
-    if (currentDecision.confidence < 40 && netProfit > 0) {
-      return { exit: true, reason: "MARKET_CONDITION_DETERIORATED" };
+    // إذا تدهورت المؤشرات الفنية (RSI, Volume) ونحن في ربح، نخرج فوراً لتأمين الربح
+    if (currentDecision.confidence < 35 && netProfit > 0.2) {
+      return { exit: true, reason: "MARKET_DETERIORATED" };
     }
 
     // 4. إدارة الوقت (Time-Based Exit)
@@ -785,8 +799,7 @@ class ProfessionalTradingSystem {
       };
     }
 
-    // 5. مراقبة سيولة الحيتان (Whale Activity)
-    // إذا اختفت طلبات الشراء الكبيرة (الدعم) ونحن في ربح بسيط، نخرج لتجنب الانعكاس
+    // 5. مراقبة سيولة الحيتان
     const currentWhales = this.analyzeWhales(trade.symbol, orderBook);
     if (currentWhales.score < 10 && netProfit > 0.1) {
       return { exit: true, reason: "WHALES_DISAPPEARED" };
@@ -854,6 +867,51 @@ class ProfessionalTradingSystem {
       WHALES_DISAPPEARED: "اختفاء الحيتان",
     };
     return reasons[englishReason] || englishReason;
+  }
+
+  async sendMonitoringReport() {
+    let report = "🔍 *تقرير المراقبة اللحظي (أقوى الفرص)*\n\n";
+
+    // ترتيب العملات بناءً على نسبة الثقة (Confidence) من الأعلى للأقل
+    const sortedSymbols = CONFIG.SYMBOLS.map((symbol) => {
+      const orderBook = this.orderBooks[symbol];
+      if (!orderBook) return { symbol, confidence: 0 };
+      const decision = this.calculateDecisionMatrix(symbol, orderBook);
+      return { symbol, confidence: decision.confidence, decision };
+    }).sort((a, b) => b.confidence - a.confidence);
+
+    // اختيار أفضل 3 عملات حالياً
+    const top3 = sortedSymbols.slice(0, 3);
+
+    top3.forEach((item, index) => {
+      const { symbol, confidence, decision } = item;
+      const ind = decision.indicators;
+      const whaleIcon =
+        decision.whaleAnalysis.score > 20 ? "🐋 قوية" : "🐟 عادية";
+
+      report += `${index + 1}. *${symbol}* 💹\n`;
+      report += `    • الثقة: ${confidence.toFixed(1)}%\n`;
+      report += `    • RSI: ${ind ? ind.rsi.toFixed(1) : "N/A"}\n`;
+      report += `    • سيولة الحيتان: ${whaleIcon}\n`;
+      report += `    • الاتجاه: ${
+        ind && ind.sma50 > ind.sma200 ? "📈 صاعد" : "📉 هابط"
+      }\n`;
+
+      // حساب القرب من الدخول
+      const gap = CONFIG.MIN_CONFIDENCE - confidence;
+      if (gap <= 0) {
+        report += `    • الحالة: 🟢 جاهزة للتنفيذ فوراً!\n`;
+      } else {
+        report += `    • القرب من الدخول: باقي ${gap.toFixed(1)}% ثقة\n`;
+      }
+      report += `----------------------------\n`;
+    });
+
+    if (this.activeTrades.length > 0) {
+      report += `\n💼 *الصفقات المفتوحة:* ${this.activeTrades.length}/${CONFIG.MAX_CONCURRENT_TRADES}`;
+    }
+
+    this.sendTelegram(report);
   }
 
   // ==================== WebSocket ====================
@@ -937,6 +995,13 @@ class ProfessionalTradingSystem {
         );
       }
     }, 3600000);
+    // إرسال تقرير المراقبة كل ساعة (3600000 مللي ثانية)
+
+    setInterval(() => {
+      this.sendMonitoringReport();
+    }, 3600000);
+    // استدعاء أول مرة فور تشغيل البوت
+    this.sendMonitoringReport();
 
     this.sendTelegram("✅ *النظام يعمل بنجاح مع قاعدة بيانات SQLite*");
   }
