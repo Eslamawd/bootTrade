@@ -208,32 +208,26 @@ class ProfessionalTradingSystem {
   }
   // ==================== حساب المؤشرات الفنية من البيانات التاريخية ====================
   calculateTechnicalIndicators(symbol) {
-    if (!this.marketData[symbol] || !this.marketData[symbol].candles) {
+    if (!this.marketData[symbol] || !this.marketData[symbol].candles)
       return null;
-    }
 
     const candles = this.marketData[symbol].candles;
-    if (candles.length < 50) {
-      console.warn(
-        `⚠️ ${symbol}: بيانات غير كافية للمؤشرات (${candles.length} فقط)`
-      );
-      return null;
-    }
+    if (candles.length < 50) return null;
 
-    const closes = candles.map((c) => c[4]); // close
-    const highs = candles.map((c) => c[2]); // high
-    const lows = candles.map((c) => c[3]); // low
-    const volumes = candles.map((c) => c[5]); // volume
+    // فصل البيانات مع استبعاد الشمعة الأخيرة "غير المكتملة" للحصول على دقة 100%
+    const completedCandles = candles.slice(0, -1);
+
+    const closes = completedCandles.map((c) => c[4]);
+    const highs = completedCandles.map((c) => c[2]);
+    const lows = completedCandles.map((c) => c[3]);
+    const volumes = completedCandles.map((c) => c[5]);
 
     try {
-      // RSI
-      const rsiValues = TI.RSI.calculate({
-        values: closes,
-        period: 14,
-      });
+      // 1. حساب الـ RSI لآخر شمعة مغلقة
+      const rsiValues = TI.RSI.calculate({ values: closes, period: 14 });
       const currentRSI = rsiValues[rsiValues.length - 1];
 
-      // ATR (Average True Range)
+      // 2. حساب ATR
       const atrValues = TI.ATR.calculate({
         high: highs,
         low: lows,
@@ -242,55 +236,39 @@ class ProfessionalTradingSystem {
       });
       const currentATR = atrValues[atrValues.length - 1];
 
-      // Moving Averages
-      const sma50Values = TI.SMA.calculate({
-        values: closes,
-        period: 50,
-      });
-      const sma200Values = TI.SMA.calculate({
-        values: closes,
-        period: 200,
-      });
-
-      const sma50 = sma50Values[sma50Values.length - 1];
-      const sma200 = sma200Values[sma200Values.length - 1];
-
-      // Volume Moving Average
-      const volumeMA20 = TI.SMA.calculate({
-        values: volumes,
-        period: 20,
-      });
+      // 3. تحليل الحجم (Volume) - المقارنة الحقيقية
+      const volumeMA20 = TI.SMA.calculate({ values: volumes, period: 20 });
       const currentVolumeMA = volumeMA20[volumeMA20.length - 1];
-      const currentVolume = volumes[volumes.length - 1];
-      const volumeRatio = currentVolume / (currentVolumeMA || 1);
+      const lastCompletedVolume = volumes[volumes.length - 1];
 
-      // MACD
-      const macdInput = {
+      // النسبة الآن ستكون دقيقة لأننا نقارن شمعة كاملة بمتوسط شموع كاملة
+      const volumeRatio = lastCompletedVolume / (currentVolumeMA || 1);
+
+      // باقي المؤشرات (SMA, MACD, Bollinger) باستخدام closes
+      const sma50Values = TI.SMA.calculate({ values: closes, period: 50 });
+      const sma200Values = TI.SMA.calculate({ values: closes, period: 200 });
+      const lastMACD = TI.MACD.calculate({
         values: closes,
         fastPeriod: 12,
         slowPeriod: 26,
         signalPeriod: 9,
         SimpleMAOscillator: false,
         SimpleMASignal: false,
-      };
-      const macdResult = TI.MACD.calculate(macdInput);
-      const lastMACD = macdResult[macdResult.length - 1];
+      }).pop();
 
-      // Bollinger Bands
-      const bbResult = TI.BollingerBands.calculate({
+      const lastBB = TI.BollingerBands.calculate({
         values: closes,
         period: 20,
         stdDev: 2,
-      });
-      const lastBB = bbResult[bbResult.length - 1];
+      }).pop();
 
       const indicators = {
         rsi: currentRSI,
         atr: currentATR,
-        sma50,
-        sma200,
+        sma50: sma50Values.pop(),
+        sma200: sma200Values.pop(),
         volumeMA20: currentVolumeMA,
-        currentVolume,
+        currentVolume: lastCompletedVolume,
         volumeRatio,
         macd: lastMACD?.MACD || 0,
         macdSignal: lastMACD?.signal || 0,
@@ -301,12 +279,12 @@ class ProfessionalTradingSystem {
         timestamp: Date.now(),
       };
 
-      // حفظ المؤشرات في قاعدة البيانات
+      // حفظ للتحليل لاحقاً
       this.dbManager.saveTechnicalIndicators(symbol, indicators);
-      // تخزين متوسط الحجم لاستخدامه في تحليل الحيتان الديناميكي
+
       if (!this.volumeHistory) this.volumeHistory = {};
       this.volumeHistory[symbol] = {
-        avgVolume: currentVolumeMA * closes[closes.length - 1], // تحويل الحجم من عملات إلى دولار
+        avgVolume: currentVolumeMA * closes[closes.length - 1],
       };
 
       return indicators;
