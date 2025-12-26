@@ -303,6 +303,17 @@ class ProfessionalTradingSystem {
     const reasons = [];
     const warnings = [];
 
+    const orderBookDynamics = this.analyzeOrderBookDynamics(symbol, orderBook);
+    totalScore += orderBookDynamics.score;
+    reasons.push(...orderBookDynamics.reasons);
+
+    if (orderBookDynamics.imbalance < 0.4) {
+      totalScore = 0;
+      warnings.push("⚠️ إيقاف اضطراري: ضغط بيع Ask Volume يبتلع الطلبات!");
+    }
+
+    // تحليل المؤشرات الفنية
+
     // 1. RSI Analysis (25 نقطة)
     if (indicators.rsi >= 40 && indicators.rsi <= CONFIG.MAX_RSI_ENTRY) {
       totalScore += 30;
@@ -441,6 +452,54 @@ class ProfessionalTradingSystem {
     this.dbManager.saveWhaleSighting(symbol, whaleData).catch((e) => {});
 
     return { score, reasons, warnings, whales, dynamicThreshold };
+  }
+
+  analyzeOrderBookDynamics(symbol, orderBook) {
+    if (!orderBook || !orderBook.bids || !orderBook.asks)
+      return { score: 0, imbalance: 0, reasons: [] };
+
+    // 1. حساب السيولة (Imbalance)
+    const bidVolume = orderBook.bids
+      .slice(0, 10)
+      .reduce((sum, b) => sum + b[0] * b[1], 0);
+    const askVolume = orderBook.asks
+      .slice(0, 10)
+      .reduce((sum, a) => sum + a[0] * a[1], 0);
+    const imbalance = bidVolume / askVolume;
+
+    let score = 0;
+    const reasons = [];
+
+    // 2. تقييم الاختلال (Imbalance Score)
+    if (imbalance > 2.0) {
+      score += 25;
+      reasons.push(
+        `🌊 سيولة شراء ضخمة لـ ${
+          symbol.split("/")[0]
+        } (Imbalance: ${imbalance.toFixed(1)}x)`
+      );
+    } else if (imbalance < 0.5) {
+      score -= 25; // عقوبة شديدة لأن البيع يضغط على السعر
+    }
+
+    // 3. رصد الجدران الذكي باستخدام الـ symbol
+    // نحدد عتبة الجدار بناءً على العملة (بيتكوين يحتاج سيولة أكبر بكثير)
+    let wallThreshold = 100000; // الافتراضي للعملات البديلة
+    if (symbol.startsWith("BTC")) wallThreshold = 1500000;
+    if (symbol.startsWith("ETH")) wallThreshold = 600000;
+
+    const bigBid = Math.max(
+      ...orderBook.bids.slice(0, 15).map((b) => b[0] * b[1])
+    );
+
+    if (bigBid > wallThreshold) {
+      score += 15;
+      reasons.push(
+        `🧱 رصد جدار دعم صلب ($${(bigBid / 1000).toFixed(0)}K) لعملة ${symbol}`
+      );
+    }
+
+    return { score, imbalance, reasons };
   }
   // ==================== تحليل الفرص ====================
   analyzeForEntry(symbol, orderBook) {
@@ -877,7 +936,7 @@ class ProfessionalTradingSystem {
 
   async sendMonitoringReport() {
     try {
-      let report = "🔍 *تقرير الرادار اللحظي*\n\n";
+      let report = "🔍 *تقرير الرادار اللحظي المطور*\n\n";
       const validOpportunities = [];
 
       for (const symbol of CONFIG.SYMBOLS) {
@@ -885,12 +944,13 @@ class ProfessionalTradingSystem {
         if (!orderBook) continue;
 
         const decision = this.calculateDecisionMatrix(symbol, orderBook);
-        // التأكد من وجود البيانات قبل القراءة
         if (decision && decision.indicators) {
           validOpportunities.push({
             symbol,
             confidence: decision.confidence,
             decision,
+            // نحتفظ ببيانات الأوردر بوك لهذا الرمز تحديداً
+            orderBookData: this.analyzeOrderBookDynamics(symbol, orderBook),
           });
         }
       }
@@ -899,20 +959,32 @@ class ProfessionalTradingSystem {
         return this.sendTelegram("⏳ جاري تجميع بيانات كافية للرادار...");
       }
 
-      // ترتيب حسب الثقة
+      // ترتيب حسب الثقة (الأعلى أولاً)
       validOpportunities.sort((a, b) => b.confidence - a.confidence);
 
-      validOpportunities.slice(0, 3).forEach((item, index) => {
-        const { symbol, confidence, decision } = item;
+      validOpportunities.slice(0, 5).forEach((item, index) => {
+        const { symbol, confidence, decision, orderBookData } = item;
         const ind = decision.indicators;
+
+        // إنشاء شريط بصري لقوة المشترين (Imbalance)
+        const powerBar = this.generatePowerBar(orderBookData.imbalance);
+
         report += `${index + 1}. *${symbol}* (${confidence.toFixed(1)}%)\n`;
+        report += `   ⚖️ السيولة: ${powerBar} (${orderBookData.imbalance.toFixed(
+          1
+        )}x)\n`;
         report += `   • RSI: ${ind.rsi.toFixed(
           1
         )} | حجم: ${ind.volumeRatio.toFixed(1)}x\n`;
+
+        // إضافة معلومة عن الجدران إذا وجدت
+        const hasWall = orderBookData.reasons.find((r) => r.includes("🧱"));
+        if (hasWall) report += `   ${hasWall}\n`;
+
         report += `   • الحالة: ${
-          confidence >= CONFIG.MIN_CONFIDENCE ? "🟢 جاهز" : "🟡 مراقبة"
+          confidence >= CONFIG.MIN_CONFIDENCE ? "🚀 دخول" : "📉 مراقبة"
         }\n`;
-        report += `------------------\n`;
+        report += `--------------------------\n`;
       });
 
       this.sendTelegram(report);
@@ -921,30 +993,48 @@ class ProfessionalTradingSystem {
     }
   }
 
+  // دالة مساعدة لرسم ميزان القوى بصرياً
+  generatePowerBar(imbalance) {
+    const length = 6; // طول الشريط
+    const greenUnits = Math.min(length, Math.max(1, Math.round(imbalance)));
+    const redUnits = length - greenUnits;
+    return "🟩".repeat(greenUnits) + "🟥".repeat(redUnits);
+  }
   // ==================== WebSocket ====================
   connectWebSockets() {
     CONFIG.SYMBOLS.forEach((symbol) => {
-      const ws = new WebSocket(
-        `wss://stream.binance.com:9443/ws/${symbol
-          .replace("/", "")
-          .toLowerCase()}@depth20@100ms`
-      );
-
-      ws.on("message", (data) => {
-        try {
-          const parsed = JSON.parse(data);
-          this.orderBooks[symbol] = {
-            bids: parsed.bids.map((b) => [parseFloat(b[0]), parseFloat(b[1])]),
-            asks: parsed.asks.map((a) => [parseFloat(a[0]), parseFloat(a[1])]),
-          };
-        } catch (error) {}
-      });
-
-      ws.on("error", () => {});
-      ws.on("close", () => setTimeout(() => this.connectWebSockets(), 5000));
+      this.connectSingleSymbolWS(symbol);
     });
   }
 
+  connectSingleSymbolWS(symbol) {
+    const streamName = symbol.replace("/", "").toLowerCase();
+    const ws = new WebSocket(
+      `wss://stream.binance.com:9443/ws/${streamName}@depth20@100ms`
+    );
+
+    ws.on("message", (data) => {
+      try {
+        const parsed = JSON.parse(data);
+        this.orderBooks[symbol] = {
+          bids: parsed.bids.map((b) => [parseFloat(b[0]), parseFloat(b[1])]),
+          asks: parsed.asks.map((a) => [parseFloat(a[0]), parseFloat(a[1])]),
+        };
+      } catch (error) {
+        // تجنب طباعة أخطاء الـ JSON لعدم ملء الشاشة
+      }
+    });
+
+    ws.on("error", (err) => {
+      console.error(`❌ WS Error for ${symbol}:`, err.message);
+    });
+
+    ws.on("close", () => {
+      console.log(`🔄 Reconnecting WebSocket for ${symbol}...`);
+      // إعادة اتصال هذه العملة فقط بعد 5 ثوانٍ
+      setTimeout(() => this.connectSingleSymbolWS(symbol), 5000);
+    });
+  }
   // ==================== التشغيل الرئيسي ====================
   async start() {
     this.sendTelegram("🏦 *بدء النظام الاحترافي مع قاعدة بيانات SQLite*");
