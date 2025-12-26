@@ -19,19 +19,19 @@ const CONFIG = {
     "DOT/USDT",
     "LTC/USDT",
   ],
-  MAX_CONCURRENT_TRADES: 2,
+  MAX_CONCURRENT_TRADES: 6,
   UPDATE_INTERVAL: 5000, // أبطأ قليلاً لإعطاء فرصة لتحليل البيانات
   MAX_MONITOR_TIME: 7200000, // ساعتين كحد أقصى
   COOLDOWN_TIME: 300000, // 5 دقائق
 
   // إعدادات المؤشرات
-  CANDLE_LIMIT: 100,
+  CANDLE_LIMIT: 220,
   TIMEFRAME: "5m",
 
   // إعدادات مصفوفة القرار
-  MIN_CONFIDENCE: 60,
-  MAX_RSI_ENTRY: 55,
-  MIN_VOLUME_RATIO: 1.5,
+  MIN_CONFIDENCE: 75,
+  MAX_RSI_ENTRY: 63,
+  MIN_VOLUME_RATIO: 1.7,
 };
 
 class ProfessionalTradingSystem {
@@ -212,10 +212,7 @@ class ProfessionalTradingSystem {
     const candles = this.marketData[symbol].candles;
     if (candles.length < 50) return null;
 
-    // 1. ضمان الترتيب الصحيح للبيانات قبل أي حسابات
     const sortedCandles = [...candles].sort((a, b) => a[0] - b[0]);
-
-    // 2. استبعاد الشمعة الحالية "قيد التكوين" لضمان دقة الحجم
     const completedCandles = sortedCandles.slice(0, -1);
 
     const closes = completedCandles.map((c) => c[4]);
@@ -224,11 +221,16 @@ class ProfessionalTradingSystem {
     const volumes = completedCandles.map((c) => c[5]);
 
     try {
-      // حساب RSI
+      // 1. حساب RSI و RSI السابق (لحساب الـ Momentum)
       const rsiValues = TI.RSI.calculate({ values: closes, period: 14 });
       const currentRSI = rsiValues[rsiValues.length - 1];
+      const prevRSI = rsiValues[rsiValues.length - 2];
 
-      // حساب ATR
+      // 2. حساب متوسط الـ RSI (للدخول الدايناميك)
+      const rsiSMAValues = TI.SMA.calculate({ values: rsiValues, period: 20 });
+      const currentRsiSMA = rsiSMAValues[rsiSMAValues.length - 1];
+
+      // 3. حساب ATR (لقياس التقلب وتحديد الأهداف)
       const atrValues = TI.ATR.calculate({
         high: highs,
         low: lows,
@@ -237,54 +239,28 @@ class ProfessionalTradingSystem {
       });
       const currentATR = atrValues[atrValues.length - 1];
 
-      // --- حساب الحجم بدقة فائقة ---
+      // 4. تحليل الفوليوم الانفجاري
       const volumeMA20 = TI.SMA.calculate({ values: volumes, period: 20 });
-      const currentVolumeMA = volumeMA20[volumeMA20.length - 1] || 1; // حماية من القسمة على صفر
+      const currentVolumeMA = volumeMA20[volumeMA20.length - 1] || 1;
       const lastCompletedVolume = volumes[volumes.length - 1] || 0;
-
-      // النسبة الحقيقية
       const volumeRatio = lastCompletedVolume / currentVolumeMA;
 
-      // طباعة تصحيحية تظهر فقط في الـ logs إذا كان الحجم مشكوك فيه
-      if (volumeRatio < 0.2) {
-        console.log(
-          `⚠️ [DEBUG] ${symbol}: حجم ضعيف جداً! (آخر حجم: ${lastCompletedVolume.toFixed(
-            0
-          )}, المتوسط: ${currentVolumeMA.toFixed(0)})`
-        );
-      }
-
-      // باقي المؤشرات
+      // 5. المؤشرات الكلاسيكية (Trend)
       const sma50Values = TI.SMA.calculate({ values: closes, period: 50 });
       const sma200Values = TI.SMA.calculate({ values: closes, period: 200 });
-      const lastMACD = TI.MACD.calculate({
-        values: closes,
-        fastPeriod: 12,
-        slowPeriod: 26,
-        signalPeriod: 9,
-        SimpleMAOscillator: false,
-        SimpleMASignal: false,
-      }).pop();
 
-      const lastBB = TI.BollingerBands.calculate({
-        values: closes,
-        period: 20,
-        stdDev: 2,
-      }).pop();
+      const avgVolume = volumeMA20.at(-1) || 0;
 
       return {
         rsi: currentRSI,
+        prevRsi: prevRSI, // 🆕 مهم لفلتر الـ Momentum
+        rsiSMA20: currentRsiSMA, // 🆕 مهم للـ Dynamic RSI logic
+        close: closes[closes.length - 1], // السعر الحالي
         atr: currentATR,
+        volumeRatio,
+        avgVolume,
         sma50: sma50Values.pop(),
         sma200: sma200Values.pop(),
-        volumeMA20: currentVolumeMA,
-        currentVolume: lastCompletedVolume,
-        volumeRatio,
-        macd: lastMACD?.MACD || 0,
-        macdSignal: lastMACD?.signal || 0,
-        macdHistogram: lastMACD?.histogram || 0,
-        bollingerUpper: lastBB?.upper || 0,
-        bollingerLower: lastBB?.lower || 0,
         timestamp: Date.now(),
       };
     } catch (error) {
@@ -295,87 +271,77 @@ class ProfessionalTradingSystem {
   // ==================== مصفوفة القرار المحدثة ====================
   calculateDecisionMatrix(symbol, orderBook) {
     const indicators = this.calculateTechnicalIndicators(symbol);
-    if (!indicators) {
-      return { confidence: 0, reasons: ["❌ بيانات غير كافية"] };
-    }
+    if (!indicators) return { confidence: 0, reasons: ["❌ بيانات غير كافية"] };
 
     let totalScore = 0;
     const reasons = [];
     const warnings = [];
 
-    const orderBookDynamics = this.analyzeOrderBookDynamics(symbol, orderBook);
-    totalScore += orderBookDynamics.score;
-    reasons.push(...orderBookDynamics.reasons);
-
-    if (orderBookDynamics.imbalance < 0.4) {
-      totalScore = 0;
-      warnings.push("⚠️ إيقاف اضطراري: ضغط بيع Ask Volume يبتلع الطلبات!");
+    // --- 1. Order Book Dynamics (السيولة اللحظية) ---
+    const ob = this.analyzeOrderBookDynamics(symbol, orderBook);
+    totalScore += ob.score;
+    reasons.push(...ob.reasons);
+    if (ob.imbalance < 0.4) {
+      totalScore -= 30; // خصم نقاط بدل تصفير السكور لترك فرصة للمؤشرات الأخرى
+      warnings.push("⚠️ ضغط بيع قوي في الـ Order Book");
     }
 
-    // تحليل المؤشرات الفنية
+    // --- 2. Dynamic RSI (نسبة القوة النسبية المتكيفة) ---
+    // فكرة: هل الـ RSI الحالي أقل من متوسط الـ RSI لآخر فترة؟ (يعني العملة رخيصة حالياً)
+    const rsiSMA = indicators.rsiSMA20 || 50; // سنحتاج لإضافة rsiSMA في حساب المؤشرات
+    const rsiDiff = indicators.rsi - rsiSMA;
 
-    // 1. RSI Analysis (25 نقطة)
-    if (indicators.rsi >= 40 && indicators.rsi <= CONFIG.MAX_RSI_ENTRY) {
-      totalScore += 30;
-      reasons.push(`📈 RSI مثالي (${indicators.rsi.toFixed(1)})`);
-    } else if (indicators.rsi < 40) {
-      totalScore += 15;
-      reasons.push(`📉 RSI منخفض (${indicators.rsi.toFixed(1)}) - فرصة`);
-    } else if (indicators.rsi > 72 && indicators.rsi <= 80) {
-      totalScore += 5;
-      warnings.push(`⚠️ RSI مرتفع (${indicators.rsi.toFixed(1)})`);
-    } else if (indicators.rsi > 75) {
-      totalScore -= 20;
-      warnings.push(`🚨 RSI متشبع شراء (${indicators.rsi.toFixed(1)})`);
+    if (rsiDiff < -5) {
+      // الـ RSI الحالي أقل من المتوسط بـ 5 درجات (فرصة شراء)
+      totalScore += 25;
+      reasons.push(
+        `📉 RSI دايناميك: تحت المتوسط بـ ${Math.abs(rsiDiff).toFixed(
+          1
+        )} (تجميع)`
+      );
+    } else if (rsiDiff > 15) {
+      totalScore -= 15;
+      warnings.push("🚨 RSI دايناميك: تضخم سعري مقارنة بالمتوسط");
     }
 
-    // 2. Volume Analysis (20 نقطة)
-    if (indicators.volumeRatio >= 1.5) {
-      totalScore += 20;
-      reasons.push(`📊 انفجار حجم (${indicators.volumeRatio.toFixed(1)}x)`);
-    } else if (indicators.volumeRatio >= 1.1) {
-      totalScore += 15;
-      reasons.push(`📈 حجم مرتفع (${indicators.volumeRatio.toFixed(1)}x)`);
-    } else if (indicators.volumeRatio < 0.8) {
-      totalScore -= 10;
-      warnings.push(`📉 حجم منخفض (${indicators.volumeRatio.toFixed(1)}x)`);
-    }
-
-    // 3. Whale Analysis (30 نقطة)
-    const whaleAnalysis = this.analyzeWhales(symbol, orderBook);
-    totalScore += whaleAnalysis.score;
-    reasons.push(...whaleAnalysis.reasons);
-    warnings.push(...whaleAnalysis.warnings);
-
-    // 4. Trend Analysis (15 نقطة)
-    if (indicators.sma50 > indicators.sma200) {
-      totalScore += 15;
-      reasons.push(`📈 اتجاه صاعد (SMA50 > SMA200)`);
-    } else if (indicators.sma50 < indicators.sma200) {
-      totalScore -= 10;
-      warnings.push(`📉 اتجاه هابط (SMA50 < SMA200)`);
-    }
-
-    // 5. MACD Analysis (10 نقطة)
-    if (
-      indicators.macd > indicators.macdSignal &&
-      indicators.macdHistogram > 0
-    ) {
+    // --- 3. Dynamic Volume (انفجار الفوليوم الحقيقي) ---
+    // بنقارن الفوليوم الحالي بـ 2x ATR للفوليوم أو Standard Deviation
+    if (indicators.volumeRatio > 2.0) {
+      totalScore += 25;
+      reasons.push(
+        `🔥 انفجار فوليوم غير مسبوق (${indicators.volumeRatio.toFixed(1)}x)`
+      );
+    } else if (indicators.volumeRatio > 1.2) {
       totalScore += 10;
-      reasons.push(`🔷 MACD إيجابي`);
-    } else if (indicators.macd < indicators.macdSignal) {
-      totalScore -= 5;
-      warnings.push(`🔶 MACD سلبي`);
     }
 
-    // 6. Liquidity Analysis (المتبقي)
-    const spread =
-      (orderBook.asks[0][0] - orderBook.bids[0][0]) / orderBook.bids[0][0];
-    if (spread < 0.0005) {
-      totalScore += 10;
-      reasons.push(`⚡ سيولة عالية (سبريد ${(spread * 100).toFixed(3)}%)`);
+    // --- 4. Whale Power (قوة الحيتان) ---
+    const whales = this.analyzeWhales(symbol, orderBook, indicators.avgVolume);
+
+    totalScore += whales.score;
+    reasons.push(...whales.reasons);
+
+    // --- 5. Volatility Context (سياق التقلب) ---
+    // لو الـ ATR عالي جداً مقارنة بالسعر، ده معناه Risk عالي
+    const volatilityPct = (indicators.atr / indicators.close) * 100;
+    if (volatilityPct > 3) {
+      // تقلب أعنف من 3% في الشمعة الواحدة
+      totalScore -= 10;
+      warnings.push(
+        `⚡ تقلب مرتفع جداً (${volatilityPct.toFixed(2)}%) - خطر عالٍ`
+      );
     }
 
+    // --- 6. Trend Confirmation (تأكيد الاتجاه) ---
+    const isBullish =
+      indicators.close > indicators.sma50 &&
+      indicators.sma50 > indicators.sma200;
+    if (isBullish) {
+      totalScore += 15;
+      reasons.push("🌊 اتجاه صاعد مؤسسي (Price > SMA50 > SMA200)");
+    }
+
+    // حساب الـ Confidence النهائي مع سقف 100
     const confidence = Math.max(0, Math.min(100, totalScore));
 
     return {
@@ -383,29 +349,27 @@ class ProfessionalTradingSystem {
       reasons,
       warnings,
       indicators,
-      whaleAnalysis,
-      totalScore,
+      whaleAnalysis: whales,
+      volatility: volatilityPct,
     };
   }
 
-  analyzeWhales(symbol, orderBook) {
+  analyzeWhales(symbol, orderBook, avgVolume = 0) {
     if (!orderBook || !orderBook.bids)
       return { score: 0, reasons: [], warnings: [], whales: [] };
 
-    // حساب العتبة الديناميكية
-    const volData =
-      this.volumeHistory && this.volumeHistory[symbol]
-        ? this.volumeHistory[symbol].avgVolume
-        : 0;
+    if (!this.volumeHistory) this.volumeHistory = {};
+
+    this.volumeHistory[symbol] = { avgVolume };
+
     const dynamicThreshold =
-      volData > 0 ? Math.max(20000, volData * 0.005) : 50000;
+      avgVolume > 0 ? Math.max(20000, avgVolume * 0.005) : 50000;
 
     let score = 0;
     const reasons = [];
     const warnings = [];
     const whales = [];
 
-    // فحص الأوردر بوك
     for (let i = 0; i < Math.min(20, orderBook.bids.length); i++) {
       const value = orderBook.bids[i][0] * orderBook.bids[i][1];
       if (value >= dynamicThreshold) {
@@ -417,39 +381,32 @@ class ProfessionalTradingSystem {
       }
     }
 
-    // توزيع النقاط
     if (whales.length >= 3) {
-      score += 30;
-      reasons.push(
-        `🐋🐋🐋 ${whales.length} حيتان فوق عتبة $${(
-          dynamicThreshold / 1000
-        ).toFixed(0)}K`
-      );
+      score += 25;
+      reasons.push(`🐋🐋🐋 ${whales.length} حيتان نشطة`);
     } else if (whales.length > 0) {
       score += 15;
-      reasons.push(`🐋 رصد ${whales.length} حوت نشط`);
+      reasons.push(`🐋 رصد ${whales.length} حوت`);
     }
 
     if (whales.filter((w) => w.position <= 5).length >= 2) {
       score += 15;
-      reasons.push(`🛡️ جدار حماية قوي في أول 5 مستويات`);
+      reasons.push("🛡️ جدار دعم قوي قريب");
     }
 
-    // --- الربط مع قاعدة البيانات (الجزء الجديد) ---
-    const whaleData = {
-      count: whales.length,
-      largestValue:
-        whales.length > 0 ? Math.max(...whales.map((w) => w.value)) : 0,
-      avgValue:
-        whales.length > 0
+    this.dbManager
+      .saveWhaleSighting(symbol, {
+        count: whales.length,
+        largestValue: whales.length
+          ? Math.max(...whales.map((w) => w.value))
+          : 0,
+        avgValue: whales.length
           ? whales.reduce((a, b) => a + b.value, 0) / whales.length
           : 0,
-      positions: whales.map((w) => w.position),
-      powerScore: score,
-    };
-
-    // استدعاء الحفظ (بدون انتظار await لعدم تعطيل سرعة التحليل)
-    this.dbManager.saveWhaleSighting(symbol, whaleData).catch((e) => {});
+        positions: whales.map((w) => w.position),
+        powerScore: score,
+      })
+      .catch(() => {});
 
     return { score, reasons, warnings, whales, dynamicThreshold };
   }
@@ -465,7 +422,7 @@ class ProfessionalTradingSystem {
     const askVolume = orderBook.asks
       .slice(0, 10)
       .reduce((sum, a) => sum + a[0] * a[1], 0);
-    const imbalance = bidVolume / askVolume;
+    const imbalance = askVolume > 0 ? bidVolume / askVolume : 0;
 
     let score = 0;
     const reasons = [];
@@ -479,7 +436,7 @@ class ProfessionalTradingSystem {
         } (Imbalance: ${imbalance.toFixed(1)}x)`
       );
     } else if (imbalance < 0.5) {
-      score -= 25; // عقوبة شديدة لأن البيع يضغط على السعر
+      score -= 45; // عقوبة شديدة لأن البيع يضغط على السعر
     }
 
     // 3. رصد الجدران الذكي باستخدام الـ symbol
@@ -493,7 +450,7 @@ class ProfessionalTradingSystem {
     );
 
     if (bigBid > wallThreshold) {
-      score += 15;
+      score += 10;
       reasons.push(
         `🧱 رصد جدار دعم صلب ($${(bigBid / 1000).toFixed(0)}K) لعملة ${symbol}`
       );
