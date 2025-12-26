@@ -412,15 +412,20 @@ class ProfessionalTradingSystem {
   }
 
   analyzeOrderBookDynamics(symbol, orderBook) {
-    if (!orderBook || !orderBook.bids || !orderBook.asks)
-      return { score: 0, imbalance: 0, reasons: [] };
+    if (
+      !orderBook ||
+      !orderBook.bids ||
+      !orderBook.asks ||
+      orderBook.bids.length < 15
+    )
+      return { score: 0, imbalance: 0, reasons: [], strongWall: null };
 
-    // 1. حساب السيولة (Imbalance)
+    // 1. حساب السيولة (Imbalance) - عمق 15 لزيادة الدقة في العملات الكبيرة
     const bidVolume = orderBook.bids
-      .slice(0, 10)
+      .slice(0, 15)
       .reduce((sum, b) => sum + b[0] * b[1], 0);
     const askVolume = orderBook.asks
-      .slice(0, 10)
+      .slice(0, 15)
       .reduce((sum, a) => sum + a[0] * a[1], 0);
     const imbalance = askVolume > 0 ? bidVolume / askVolume : 0;
 
@@ -428,39 +433,50 @@ class ProfessionalTradingSystem {
     const reasons = [];
 
     // 2. تقييم الاختلال (Imbalance Score)
-    if (imbalance > 2.0) {
-      score += 25;
-      reasons.push(
-        `🌊 سيولة شراء ضخمة لـ ${
-          symbol.split("/")[0]
-        } (Imbalance: ${imbalance.toFixed(1)}x)`
-      );
-    } else if (imbalance < 0.5) {
-      score -= 45; // عقوبة شديدة لأن البيع يضغط على السعر
+    if (imbalance > 1.8) {
+      score += 30;
+      reasons.push(`🌊 سيولة شراء (Imbalance: ${imbalance.toFixed(1)}x)`);
+    } else if (imbalance < 0.4) {
+      score -= 50; // عقوبة قوية لمنع الدخول أو الاستمرار في صفقة مهددة
     }
 
-    // 3. رصد الجدران الذكي باستخدام الـ symbol
-    // نحدد عتبة الجدار بناءً على العملة (بيتكوين يحتاج سيولة أكبر بكثير)
-    let wallThreshold = 100000; // الافتراضي للعملات البديلة
+    // 3. تحديد عتبة الجدار بناءً على العملة (Dynamic Threshold)
+    let wallThreshold = 100000;
     if (symbol.startsWith("BTC")) wallThreshold = 1500000;
-    if (symbol.startsWith("ETH")) wallThreshold = 600000;
+    if (symbol.startsWith("ETH")) wallThreshold = 700000;
+    if (symbol.startsWith("SOL")) wallThreshold = 250000;
+    if (symbol.startsWith("BNB")) wallThreshold = 200000;
 
-    const bigBid = Math.max(
-      ...orderBook.bids.slice(0, 15).map((b) => b[0] * b[1])
-    );
+    // 4. رصد أقوى جدار دعم وتخزين بياناته (سعر وحجم)
+    let strongWall = null;
+    let maxWallValue = 0;
 
-    if (bigBid > wallThreshold) {
-      score += 10;
+    orderBook.bids.slice(0, 15).forEach((bid) => {
+      const wallValue = bid[0] * bid[1];
+      if (wallValue > wallThreshold && wallValue > maxWallValue) {
+        maxWallValue = wallValue;
+        strongWall = {
+          price: bid[0],
+          volume: wallValue,
+          formatted: (wallValue / 1000).toFixed(0) + "K",
+        };
+      }
+    });
+
+    if (strongWall) {
+      score += 20;
       reasons.push(
-        `🧱 رصد جدار دعم صلب ($${(bigBid / 1000).toFixed(0)}K) لعملة ${symbol}`
+        `🧱 جدار دعم صلب ($${strongWall.formatted}) عند ${strongWall.price}`
       );
     }
 
-    return { score, imbalance, reasons };
+    return { score, imbalance, reasons, strongWall };
   }
   // ==================== تحليل الفرص ====================
   analyzeForEntry(symbol, orderBook) {
     // فحصات أساسية
+    const obAnalysis = this.analyzeOrderBookDynamics(symbol, orderBook);
+
     if (this.activeTrades.length >= CONFIG.MAX_CONCURRENT_TRADES) return null;
     if (this.activeTrades.some((t) => t.symbol === symbol)) return null;
     if (
@@ -526,6 +542,11 @@ class ProfessionalTradingSystem {
       reasons: decision.reasons,
       warnings: decision.warnings,
       indicators,
+      wallPrice: obAnalysis.strongWall ? obAnalysis.strongWall.price : null,
+      initialWallVolume: obAnalysis.strongWall
+        ? obAnalysis.strongWall.volume
+        : 0,
+      imbalanceAtEntry: obAnalysis.imbalance,
       whaleAnalysis: decision.whaleAnalysis,
       targets,
       entryTime: Date.now(),
@@ -600,6 +621,9 @@ class ProfessionalTradingSystem {
         entryPrice: opportunity.entryPrice,
         entryTime: opportunity.entryTime,
         size: tradeSize,
+        wallPrice: opportunity.wallPrice, // سعر الجدار الذي نحتمي خلفه
+        initialWallVolume: opportunity.initialWallVolume, // حجم الجدار عند الدخول
+        imbalanceAtEntry: opportunity.imbalanceAtEntry, // ميزان القوى لحظة الدخول
         stopLoss: opportunity.stopLoss,
         takeProfit: opportunity.takeProfit,
         status: "ACTIVE",
@@ -771,60 +795,70 @@ class ProfessionalTradingSystem {
   }
 
   shouldExit(trade, currentPrice, netProfit, orderBook) {
-    // 1. الخروج بناءً على الستوب لوز (المحرك بواسطة ATR)
-    // هذا الشرط هو الذي سيخرجنا بربح إذا تجاوزنا الهدف ثم بدأ السعر بالانعكاس
+    // 1. تحليل الأوردر بوك اللحظي ورصد حالة الجدران
+    const obDynamics = this.analyzeOrderBookDynamics(trade.symbol, orderBook);
+
+    // 2. الخروج الفوري إذا انهار جدار الدعم (Liquidity Collapse)
+    // حتى لو لم يلمس السعر الستوب لوز، اختفاء الجدار يعني أننا "مكشوفين" تقنياً
+    if (trade.wallPrice && netProfit > -0.2) {
+      // ابحث عن الجدار الأصلي في البوك الحالي
+      const currentWall = orderBook.bids.find((b) => b[0] === trade.wallPrice);
+      // إذا اختفى الجدار أو قل حجمه عن 30% من الحجم الأصلي
+      if (
+        !currentWall ||
+        currentWall[0] * currentWall[1] < trade.initialWallVolume * 0.3
+      ) {
+        return { exit: true, reason: "WALL_COLLAPSED_OR_REMOVED" };
+      }
+    }
+
+    // 3. ملاحقة الربح الذكية (Smart Trailing)
+    // بدلاً من ATR فقط، نرفع الستوب لوز خلف جدران الدعم الجديدة التي تظهر أثناء الصعود
+    if (
+      obDynamics.strongWall &&
+      obDynamics.strongWall.price > trade.currentStopLoss &&
+      obDynamics.strongWall.price < currentPrice
+    ) {
+      trade.currentStopLoss = obDynamics.strongWall.price * 0.999;
+      console.log(
+        `🛡️ ${trade.symbol}: تم رفع حماية الستوب لوز خلف جدار جديد عند ${trade.currentStopLoss}`
+      );
+    }
+
+    // 4. الخروج بناءً على الستوب لوز الحالي (المتحرك)
     if (currentPrice <= trade.currentStopLoss) {
       return {
         exit: true,
         reason:
           trade.currentStopLoss > trade.entryPrice
-            ? "ATR_TRAILING_STOP_PROFIT"
-            : "STOP_LOSS",
+            ? "TRAILING_PROFIT_PROTECTION"
+            : "STOP_LOSS_HIT",
       };
     }
 
-    // 2. منطق تجاوز الهدف (Let Profits Run)
+    // 5. منطق Let Profits Run (تجاوز الهدف)
     if (currentPrice >= trade.takeProfit) {
-      // بدلاً من الخروج، نقوم بـ "حجز" الربح ورفع السقف
-      // نضع ستوب لوز جديد قريب جداً (مثلاً نصف مسافة ATR تحت السعر الحالي)
-      const tightStop = currentPrice - trade.atr * 0.5;
-
-      if (tightStop > trade.currentStopLoss) {
-        trade.currentStopLoss = tightStop;
-        // نرفع الهدف ليكون أعلى بـ 2x ATR من السعر الحالي لنعطي مساحة للنمو
-        trade.takeProfit = currentPrice + trade.atr * 2;
-
+      // إذا كان ميزان القوى (Imbalance) لا يزال قوياً جداً (> 2.0)، لا تخرج
+      if (obDynamics.imbalance > 2.0) {
+        trade.currentStopLoss = currentPrice * 0.995; // ضع ستوب قريب (0.5%)
+        trade.takeProfit = currentPrice * 1.01; // ارفع الهدف 1% إضافي
         console.log(
-          `🚀 ${
-            trade.symbol
-          }: تم تجاوز الهدف! جاري ملاحقة السعر عند ${currentPrice.toFixed(4)}`
+          `🚀 ${trade.symbol}: السيولة جبارة! مستمرون لملاحقة أرباح أعلى...`
         );
-        // ملاحظة: لا نرسل { exit: true } هنا لكي تستمر العملية
+      } else {
+        return { exit: true, reason: "TAKE_PROFIT_TARGET_REACHED" };
       }
     }
 
-    // 3. تحليل السوق اللحظي (Decision Matrix)
-    const currentDecision = this.calculateDecisionMatrix(
-      trade.symbol,
-      orderBook
-    );
-    // إذا تدهورت المؤشرات الفنية (RSI, Volume) ونحن في ربح، نخرج فوراً لتأمين الربح
-    if (currentDecision.confidence < 35 && netProfit > 0.2) {
-      return { exit: true, reason: "MARKET_DETERIORATED" };
+    // 6. خروج "ضعف النبض" (Low Momentum)
+    // إذا كنت في ربح بسيط والسيولة انقلبت فجأة ضدك (Imbalance < 0.5)
+    if (netProfit > 0.15 && obDynamics.imbalance < 0.5) {
+      return { exit: true, reason: "SELL_PRESSURE_DETECTED" };
     }
 
-    // 4. إدارة الوقت (Time-Based Exit)
+    // 7. إدارة الوقت (Time-Based)
     if (Date.now() - trade.entryTime > CONFIG.MAX_MONITOR_TIME) {
-      return {
-        exit: true,
-        reason: netProfit >= 0 ? "TIME_LIMIT_PROFIT" : "TIME_LIMIT_LOSS",
-      };
-    }
-
-    // 5. مراقبة سيولة الحيتان
-    const currentWhales = this.analyzeWhales(trade.symbol, orderBook);
-    if (currentWhales.score < 10 && netProfit > 0.1) {
-      return { exit: true, reason: "WHALES_DISAPPEARED" };
+      return { exit: true, reason: "TIME_LIMIT_REACHED" };
     }
 
     return { exit: false, reason: "" };
