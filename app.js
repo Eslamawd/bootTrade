@@ -20,6 +20,7 @@ const CONFIG = {
     "LTC/USDT",
   ],
   MAX_CONCURRENT_TRADES: 6,
+  MAX_SPREAD: 0.0012, // 0.12% أقصى سبريد مقبول
   UPDATE_INTERVAL: 5000, // أبطأ قليلاً لإعطاء فرصة لتحليل البيانات
   MAX_MONITOR_TIME: 7200000, // ساعتين كحد أقصى
   COOLDOWN_TIME: 300000, // 5 دقائق
@@ -484,76 +485,107 @@ class ProfessionalTradingSystem {
   }
   // ==================== تحليل الفرص ====================
   analyzeForEntry(symbol, orderBook) {
-    // فحصات أساسية
-    const obAnalysis = this.analyzeOrderBookDynamics(symbol, orderBook);
+    /* ───────────────
+     0️⃣ حمايات أساسية
+  ─────────────── */
+
+    const wsHealth = this.wsHealth?.[symbol];
+    if (
+      !wsHealth ||
+      !wsHealth.stable ||
+      Date.now() - wsHealth.lastUpdate > 2000
+    ) {
+      return null;
+    }
+
+    if (!orderBook || !orderBook.bids?.length || !orderBook.asks?.length) {
+      return null;
+    }
+
+    if (orderBook.bids.length < 10 || orderBook.asks.length < 10) {
+      return null;
+    }
 
     if (this.activeTrades.length >= CONFIG.MAX_CONCURRENT_TRADES) return null;
     if (this.activeTrades.some((t) => t.symbol === symbol)) return null;
+
     if (
-      this.cooldowns[symbol] &&
+      this.cooldowns?.[symbol] &&
       Date.now() - this.cooldowns[symbol] < CONFIG.COOLDOWN_TIME
-    )
-      return null;
-    if (!orderBook || !orderBook.bids || !orderBook.asks) return null;
-
-    // التأكد من وجود بيانات تاريخية
-    if (
-      !this.marketData[symbol] ||
-      this.marketData[symbol].candles.length < 50
     ) {
-      console.log(`⏳ ${symbol}: جاري جمع البيانات التاريخية...`);
       return null;
     }
 
-    // مصفوفة القرار
+    /* ───────────────
+     1️⃣ بيانات تاريخية
+  ─────────────── */
+
+    const market = this.marketData?.[symbol];
+    if (!market || market.candles.length < 50) {
+      return null;
+    }
+
+    /* ───────────────
+     2️⃣ OrderBook Analysis
+  ─────────────── */
+
+    const obAnalysis = this.analyzeOrderBookDynamics(symbol, orderBook);
+    if (!obAnalysis) return null;
+
+    /* ───────────────
+     3️⃣ Decision Matrix
+  ─────────────── */
+
     const decision = this.calculateDecisionMatrix(symbol, orderBook);
-
-    // إشارة "سوبر حوت"
-    if (
-      obAnalysis.imbalance > 10 &&
-      decision.whaleAnalysis.whales?.length >= 5
-    ) {
-      this.sendTelegram(
-        `💎 *فرصة ماسية المادية:* ${symbol}\nالسيولة تفوق البيع بـ ${obAnalysis.imbalance.toFixed(
-          1
-        )} ضعفاً مع وجود كوكبة من الحيتان!`
-      );
-    }
-
-    // شروط صارمة للدخول
-    if (decision.confidence < CONFIG.MIN_CONFIDENCE) return null;
+    if (!decision || decision.confidence < CONFIG.MIN_CONFIDENCE) return null;
 
     const indicators = decision.indicators;
-    if (indicators.rsi > CONFIG.MAX_RSI_ENTRY) {
-      console.log(
-        `⏹️ ${symbol}: RSI مرتفع جداً (${indicators.rsi.toFixed(1)})`
+
+    /* ───────────────
+     4️⃣ فلاتر صارمة
+  ─────────────── */
+
+    if (indicators.rsi >= CONFIG.MAX_RSI_ENTRY) return null;
+    if (indicators.volumeRatio < CONFIG.MIN_VOLUME_RATIO) return null;
+
+    const bestBid = orderBook.bids[0][0];
+    const bestAsk = orderBook.asks[0][0];
+    const spread = (bestAsk - bestBid) / bestBid;
+
+    if (spread > CONFIG.MAX_SPREAD) return null;
+
+    /* ───────────────
+     5️⃣ تنبيه سوبر حوت
+  ─────────────── */
+
+    if (
+      obAnalysis.imbalance > 10 &&
+      decision.whaleAnalysis?.whales?.length >= 5
+    ) {
+      this.sendTelegram(
+        `💎 *Super Whale Alert*\n${symbol}\nImbalance: ${obAnalysis.imbalance.toFixed(
+          1
+        )}x\nWhales: ${decision.whaleAnalysis.whales.length}`
       );
-      return null;
     }
 
-    if (indicators.volumeRatio < CONFIG.MIN_VOLUME_RATIO) {
-      console.log(
-        `⏹️ ${symbol}: حجم منخفض (${indicators.volumeRatio.toFixed(1)}x)`
-      );
-      return null;
-    }
+    /* ───────────────
+     6️⃣ أهداف ديناميكية
+  ─────────────── */
 
-    const entryPrice = orderBook.asks[0][0];
+    const entryPrice = bestAsk;
 
-    // حساب أهداف ديناميكية
     const targets = this.calculateDynamicTargets(
       entryPrice,
       indicators,
       decision.confidence
     );
-    if (targets.riskRewardRatio < 0.8) {
-      console.log(
-        `⏹️ ${symbol}: نسبة ربح/مخاطرة ضعيفة (${targets.riskRewardRatio.toFixed(
-          2
-        )})`
-      );
-      return null;
-    }
+
+    if (!targets || targets.riskRewardRatio < 0.8) return null;
+
+    /* ───────────────
+     7️⃣ OK → Entry Signal
+  ─────────────── */
 
     return {
       symbol,
@@ -564,13 +596,12 @@ class ProfessionalTradingSystem {
       reasons: decision.reasons,
       warnings: decision.warnings,
       indicators,
-      wallPrice: obAnalysis.strongWall ? obAnalysis.strongWall.price : null,
-      initialWallVolume: obAnalysis.strongWall
-        ? obAnalysis.strongWall.volume
-        : 0,
+      wallPrice: obAnalysis.strongWall?.price || null,
+      initialWallVolume: obAnalysis.strongWall?.volume || 0,
       imbalanceAtEntry: obAnalysis.imbalance,
       whaleAnalysis: decision.whaleAnalysis,
       targets,
+      spread,
       entryTime: Date.now(),
     };
   }
@@ -635,7 +666,19 @@ class ProfessionalTradingSystem {
         console.log("⚠️ رصيد غير كافي لفتح صفقة حقيقية");
         return;
       }
-      const tradeSize = myBalance / CONFIG.MAX_CONCURRENT_TRADES;
+
+      const baseRisk = 0.08; // 8% من الرصيد
+      const confidenceFactor = opportunity.confidence / 100; // 0 → 1
+      const whaleFactor = Math.min(
+        1.5,
+        (opportunity.whaleAnalysis.whales?.length || 0) * 0.3
+      );
+
+      let tradeSize = myBalance * baseRisk * confidenceFactor * whaleFactor;
+
+      // حماية
+      tradeSize = Math.min(tradeSize, myBalance / CONFIG.MAX_CONCURRENT_TRADES);
+      tradeSize = Math.max(tradeSize, 15); // حد أدنى
 
       const trade = {
         id: `TRADE_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
@@ -731,7 +774,10 @@ class ProfessionalTradingSystem {
 
       const currentProfit =
         ((currentPrice - trade.entryPrice) / trade.entryPrice) * 100;
-      const netProfit = currentProfit - 0.2; // بعد العمولات
+      const feePercent = (this.fees[trade.symbol]?.taker || 0.001) * 2 * 100;
+      // 2 لأنه شراء + بيع، *100 لتحويل النسبة
+
+      const netProfit = currentProfit - feePercent;
 
       // 2. جلب ATR اللحظي لاستخدامه في التريلينج ستوب
       const currentIndicators = this.calculateTechnicalIndicators(trade.symbol);
@@ -821,7 +867,7 @@ class ProfessionalTradingSystem {
     const obDynamics = this.analyzeOrderBookDynamics(trade.symbol, orderBook);
 
     // تعديل شرط انهيار الجدار في دالة shouldExit
-    if (trade.wallPrice && netProfit > -0.4) {
+    if (trade.wallPrice && netProfit > -0.1) {
       // رفعنا حد السماحية قليلاً من -0.2 إلى -0.4
       const currentWall = orderBook.bids.find(
         (b) => Math.abs(b[0] - trade.wallPrice) < trade.entryPrice * 0.0001
@@ -1026,35 +1072,78 @@ class ProfessionalTradingSystem {
       this.connectSingleSymbolWS(symbol);
     });
   }
-
   connectSingleSymbolWS(symbol) {
     const streamName = symbol.replace("/", "").toLowerCase();
     const ws = new WebSocket(
       `wss://stream.binance.com:9443/ws/${streamName}@depth20@100ms`
     );
 
+    // حالة صحة الـ WebSocket لكل زوج
+    if (!this.wsHealth) this.wsHealth = {};
+    this.wsHealth[symbol] = {
+      stable: false,
+      ticks: 0,
+      lastUpdate: 0,
+      lastBestBid: null,
+    };
+
     ws.on("message", (data) => {
       try {
         const parsed = JSON.parse(data);
-        this.orderBooks[symbol] = {
-          bids: parsed.bids.map((b) => [parseFloat(b[0]), parseFloat(b[1])]),
-          asks: parsed.asks.map((a) => [parseFloat(a[0]), parseFloat(a[1])]),
-        };
-      } catch (error) {
-        // تجنب طباعة أخطاء الـ JSON لعدم ملء الشاشة
+
+        // ✅ حماية من البيانات الناقصة
+        if (
+          !parsed.bids ||
+          !parsed.asks ||
+          parsed.bids.length < 10 ||
+          parsed.asks.length < 10
+        ) {
+          return;
+        }
+
+        const bids = parsed.bids.map((b) => [Number(b[0]), Number(b[1])]);
+        const asks = parsed.asks.map((a) => [Number(a[0]), Number(a[1])]);
+
+        const bestBid = bids[0][0];
+        const health = this.wsHealth[symbol];
+
+        // ⛔ تجاهل التحديثات المتجمدة (السعر لم يتغير)
+        if (health.lastBestBid === bestBid) return;
+
+        health.lastBestBid = bestBid;
+        health.lastUpdate = Date.now();
+        health.ticks++;
+
+        // ✅ نعتبر السوق مستقر بعد 3 تحديثات صحيحة
+        if (health.ticks >= 3) {
+          health.stable = true;
+        }
+
+        this.orderBooks[symbol] = { bids, asks };
+      } catch (_) {
+        // تجاهل أي خطأ parsing بدون crash
       }
     });
 
     ws.on("error", (err) => {
       console.error(`❌ WS Error for ${symbol}:`, err.message);
+      if (this.wsHealth[symbol]) {
+        this.wsHealth[symbol].stable = false;
+        this.wsHealth[symbol].ticks = 0;
+      }
+      ws.close();
     });
 
     ws.on("close", () => {
       console.log(`🔄 Reconnecting WebSocket for ${symbol}...`);
-      // إعادة اتصال هذه العملة فقط بعد 5 ثوانٍ
+      if (this.wsHealth[symbol]) {
+        this.wsHealth[symbol].stable = false;
+        this.wsHealth[symbol].ticks = 0;
+      }
       setTimeout(() => this.connectSingleSymbolWS(symbol), 5000);
     });
   }
+
   // ==================== التشغيل الرئيسي ====================
   async start() {
     this.sendTelegram("🏦 *بدء النظام الاحترافي مع قاعدة بيانات SQLite*");
@@ -1064,6 +1153,17 @@ class ProfessionalTradingSystem {
     }, 24 * 60 * 60 * 1000);
 
     await this.exchange.loadMarkets();
+    this.fees = {};
+
+    for (const s of CONFIG.SYMBOLS) {
+      const market = this.exchange.markets[s];
+      this.fees[s] = {
+        maker: market.maker || 0.001,
+        taker: market.taker || 0.001,
+      };
+    }
+
+    console.log("✅ الرسوم لكل رمز تم تحميلها:", this.fees);
 
     // تحميل البيانات التاريخية أولاً
     this.sendTelegram("📊 *جاري تحميل البيانات التاريخية...*");
