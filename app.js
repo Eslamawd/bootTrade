@@ -498,6 +498,18 @@ class ProfessionalTradingSystem {
     // مصفوفة القرار
     const decision = this.calculateDecisionMatrix(symbol, orderBook);
 
+    // إشارة "سوبر حوت"
+    if (
+      obAnalysis.imbalance > 10 &&
+      decision.whaleAnalysis.whales?.length >= 5
+    ) {
+      this.sendTelegram(
+        `💎 *فرصة ماسية المادية:* ${symbol}\nالسيولة تفوق البيع بـ ${obAnalysis.imbalance.toFixed(
+          1
+        )} ضعفاً مع وجود كوكبة من الحيتان!`
+      );
+    }
+
     // شروط صارمة للدخول
     if (decision.confidence < CONFIG.MIN_CONFIDENCE) return null;
 
@@ -798,20 +810,21 @@ class ProfessionalTradingSystem {
     // 1. تحليل الأوردر بوك اللحظي ورصد حالة الجدران
     const obDynamics = this.analyzeOrderBookDynamics(trade.symbol, orderBook);
 
-    // 2. الخروج الفوري إذا انهار جدار الدعم (Liquidity Collapse)
-    // حتى لو لم يلمس السعر الستوب لوز، اختفاء الجدار يعني أننا "مكشوفين" تقنياً
-    if (trade.wallPrice && netProfit > -0.2) {
-      // ابحث عن الجدار الأصلي في البوك الحالي
-      const currentWall = orderBook.bids.find((b) => b[0] === trade.wallPrice);
-      // إذا اختفى الجدار أو قل حجمه عن 30% من الحجم الأصلي
+    // تعديل شرط انهيار الجدار في دالة shouldExit
+    if (trade.wallPrice && netProfit > -0.4) {
+      // رفعنا حد السماحية قليلاً من -0.2 إلى -0.4
+      const currentWall = orderBook.bids.find(
+        (b) => Math.abs(b[0] - trade.wallPrice) < trade.entryPrice * 0.0001
+      );
+
+      // بدلاً من الخروج عند 30% من الحجم، لنجعلها أكثر مرونة 20%
       if (
         !currentWall ||
-        currentWall[0] * currentWall[1] < trade.initialWallVolume * 0.3
+        currentWall[0] * currentWall[1] < trade.initialWallVolume * 0.2
       ) {
-        return { exit: true, reason: "WALL_COLLAPSED_OR_REMOVED" };
+        return { exit: true, reason: "WALL_LIQUIDITY_EVAPORATED" };
       }
     }
-
     // 3. ملاحقة الربح الذكية (Smart Trailing)
     // بدلاً من ATR فقط، نرفع الستوب لوز خلف جدران الدعم الجديدة التي تظهر أثناء الصعود
     if (
@@ -986,10 +999,16 @@ class ProfessionalTradingSystem {
 
   // دالة مساعدة لرسم ميزان القوى بصرياً
   generatePowerBar(imbalance) {
-    const length = 6; // طول الشريط
-    const greenUnits = Math.min(length, Math.max(1, Math.round(imbalance)));
-    const redUnits = length - greenUnits;
-    return "🟩".repeat(greenUnits) + "🟥".repeat(redUnits);
+    const totalChars = 8;
+    // حساب عدد المربعات الخضراء بناءً على الـ imbalance (1.0 تعادل المنتصف)
+    let greenCount = Math.min(
+      totalChars,
+      Math.max(1, Math.floor((imbalance / 2) * totalChars))
+    );
+    if (imbalance > 2) greenCount = totalChars; // سيولة شراء ساحقة
+
+    const redCount = totalChars - greenCount;
+    return "🟩".repeat(greenCount) + "🟥".repeat(redCount);
   }
   // ==================== WebSocket ====================
   connectWebSockets() {
