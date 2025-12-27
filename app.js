@@ -26,7 +26,7 @@ const CONFIG = {
 
   // إعدادات المؤشرات
   CANDLE_LIMIT: 220,
-  TIMEFRAME: "5m",
+  TIMEFRAME: "30m",
 
   // إعدادات مصفوفة القرار
   MIN_CONFIDENCE: 85,
