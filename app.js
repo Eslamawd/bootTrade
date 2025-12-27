@@ -15,11 +15,10 @@ const CONFIG = {
     "ADA/USDT",
     "SOL/USDT",
     "DOGE/USDT",
-    "MATIC/USDT",
     "DOT/USDT",
     "LTC/USDT",
   ],
-  MAX_CONCURRENT_TRADES: 6,
+  MAX_CONCURRENT_TRADES: 5,
   MAX_SPREAD: 0.0012, // 0.12% أقصى سبريد مقبول
   UPDATE_INTERVAL: 5000, // أبطأ قليلاً لإعطاء فرصة لتحليل البيانات
   MAX_MONITOR_TIME: 7200000, // ساعتين كحد أقصى
@@ -30,7 +29,7 @@ const CONFIG = {
   TIMEFRAME: "5m",
 
   // إعدادات مصفوفة القرار
-  MIN_CONFIDENCE: 75,
+  MIN_CONFIDENCE: 85,
   MAX_RSI_ENTRY: 63,
   MIN_VOLUME_RATIO: 1.7,
 };
