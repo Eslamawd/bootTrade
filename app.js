@@ -250,13 +250,17 @@ class ProfessionalTradingSystem {
       const sma200Values = TI.SMA.calculate({ values: closes, period: 200 });
 
       const avgVolume = volumeMA20.at(-1) || 0;
+      const lastClose = closes[closes.length - 1]; // الإغلاق الأخير (الحالي)
+      const prevClose = closes[closes.length - 2]; // الإغلاق الذي قبله
 
       return {
         rsi: currentRSI,
         prevRsi: prevRSI, // 🆕 مهم لفلتر الـ Momentum
         rsiSMA20: currentRsiSMA, // 🆕 مهم للـ Dynamic RSI logic
-        close: closes[closes.length - 1], // السعر الحالي
+        close: lastClose, // السعر الحالي
         atr: currentATR,
+        // السعر الحالي للإغلاق المكتمل
+        prevClose: prevClose,
         volumeRatio,
         avgVolume,
         sma50: sma50Values.pop(),
@@ -306,13 +310,19 @@ class ProfessionalTradingSystem {
 
     // --- 3. Dynamic Volume (انفجار الفوليوم الحقيقي) ---
     // بنقارن الفوليوم الحالي بـ 2x ATR للفوليوم أو Standard Deviation
-    if (indicators.volumeRatio > 2.0) {
+    if (
+      indicators.volumeRatio > 2.0 &&
+      indicators.close > indicators.prevClose
+    ) {
       totalScore += 25;
       reasons.push(
         `🔥 انفجار فوليوم غير مسبوق (${indicators.volumeRatio.toFixed(1)}x)`
       );
-    } else if (indicators.volumeRatio > 1.2) {
-      totalScore += 10;
+    } else if (
+      indicators.volumeRatio > 2.0 &&
+      indicators.close <= indicators.prevClose
+    ) {
+      totalScore += 25;
     }
 
     // --- 4. Whale Power (قوة الحيتان) ---
