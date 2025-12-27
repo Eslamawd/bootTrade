@@ -867,7 +867,7 @@ class ProfessionalTradingSystem {
     const obDynamics = this.analyzeOrderBookDynamics(trade.symbol, orderBook);
 
     // تعديل شرط انهيار الجدار في دالة shouldExit
-    if (trade.wallPrice && netProfit > -0.1) {
+    if (trade.wallPrice && netProfit > -0.3) {
       // رفعنا حد السماحية قليلاً من -0.2 إلى -0.4
       const currentWall = orderBook.bids.find(
         (b) => Math.abs(b[0] - trade.wallPrice) < trade.entryPrice * 0.0001
@@ -876,7 +876,7 @@ class ProfessionalTradingSystem {
       // بدلاً من الخروج عند 30% من الحجم، لنجعلها أكثر مرونة 20%
       if (
         !currentWall ||
-        currentWall[0] * currentWall[1] < trade.initialWallVolume * 0.2
+        currentWall[0] * currentWall[1] < trade.initialWallVolume * 0.1
       ) {
         return { exit: true, reason: "WALL_LIQUIDITY_EVAPORATED" };
       }
