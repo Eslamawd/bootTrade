@@ -18,11 +18,11 @@ const CONFIG = {
     "DOT/USDT",
     "LTC/USDT",
   ],
-  MAX_CONCURRENT_TRADES: 5,
+  MAX_CONCURRENT_TRADES: 3,
   MAX_SPREAD: 0.0012, // 0.12% أقصى سبريد مقبول
   UPDATE_INTERVAL: 5000, // أبطأ قليلاً لإعطاء فرصة لتحليل البيانات
-  MAX_MONITOR_TIME: 7200000, // ساعتين كحد أقصى
-  COOLDOWN_TIME: 300000, // 5 دقائق
+  MAX_MONITOR_TIME: 10800000, // ساعتين كحد أقصى
+  COOLDOWN_TIME: 600000, // 5 دقائق
 
   // إعدادات المؤشرات
   CANDLE_LIMIT: 220,
@@ -31,7 +31,7 @@ const CONFIG = {
   // إعدادات مصفوفة القرار
   MIN_CONFIDENCE: 85,
   MAX_RSI_ENTRY: 63,
-  MIN_VOLUME_RATIO: 1.7,
+  MIN_VOLUME_RATIO: 1.5,
 };
 
 class ProfessionalTradingSystem {
@@ -657,102 +657,88 @@ class ProfessionalTradingSystem {
       return 0;
     }
   }
-
   async executeTrade(opportunity) {
     try {
       const myBalance = await this.getMyActualBalance();
-      if (myBalance < 10) {
-        console.log("⚠️ رصيد غير كافي لفتح صفقة حقيقية");
+      // 1. فحص رصيد الأمان (تجنب الحسابات المصفرة)
+      if (myBalance < 15) {
+        console.log("⚠️ الرصيد الحالي منخفض جداً لفتح صفقة جديدة");
         return;
       }
 
-      const baseRisk = 0.08; // 8% من الرصيد
-      const confidenceFactor = opportunity.confidence / 100; // 0 → 1
+      // 2. معادلة حجم الصفقة الذكية
+      const baseRisk = 0.1; // رفعنا المخاطرة لـ 10% بما أن الفريم أكبر (15د)
+      const confidenceFactor = opportunity.confidence / 100;
+      // تقوية تأثير الحيتان في المعادلة
       const whaleFactor = Math.min(
-        1.5,
-        (opportunity.whaleAnalysis.whales?.length || 0) * 0.3
+        2.0, // الحد الأقصى لمضاعفة الصفقة
+        1 + (opportunity.whaleAnalysis.whales?.length || 0) * 0.2
       );
 
       let tradeSize = myBalance * baseRisk * confidenceFactor * whaleFactor;
 
-      // حماية
-      tradeSize = Math.min(tradeSize, myBalance / CONFIG.MAX_CONCURRENT_TRADES);
-      tradeSize = Math.max(tradeSize, 15); // حد أدنى
+      // حماية الرصيد وتوزيعه
+      tradeSize = Math.min(tradeSize, myBalance / 2); // لا تدخل بأكثر من نصف الرصيد في صفقة واحدة
+      tradeSize = Math.max(tradeSize, 11); // الحد الأدنى لباينانس هو 10-11 دولار
 
       const trade = {
         id: `TRADE_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
         symbol: opportunity.symbol,
         entryPrice: opportunity.entryPrice,
-        entryTime: opportunity.entryTime,
+        entryTime: new Date().toISOString(), // تنسيق ISO لقاعدة البيانات
         size: tradeSize,
-        wallPrice: opportunity.wallPrice, // سعر الجدار الذي نحتمي خلفه
-        initialWallVolume: opportunity.initialWallVolume, // حجم الجدار عند الدخول
-        imbalanceAtEntry: opportunity.imbalanceAtEntry, // ميزان القوى لحظة الدخول
+        wallPrice: opportunity.wallPrice,
+        initialWallVolume: opportunity.initialWallVolume,
+        imbalanceAtEntry: opportunity.imbalanceAtEntry,
         stopLoss: opportunity.stopLoss,
         takeProfit: opportunity.takeProfit,
         status: "ACTIVE",
-
-        // بيانات القرار
         confidence: opportunity.confidence,
         reasons: opportunity.reasons,
-        warnings: opportunity.warnings,
-
-        // بيانات فنية
         rsi: opportunity.indicators.rsi,
         volumeRatio: opportunity.indicators.volumeRatio,
         atr: opportunity.indicators.atr,
-
-        // التتبع
         highestPrice: opportunity.entryPrice,
         currentStopLoss: opportunity.stopLoss,
+        // سجل تتبع لتطور الستوب لوز
         stopLossHistory: [
-          {
-            price: opportunity.stopLoss,
-            time: Date.now(),
-            reason: "Initial Stop Loss",
-          },
+          { price: opportunity.stopLoss, time: Date.now(), reason: "Initial" },
         ],
       };
 
+      // 3. منع الازدواجية (تأكد أن العملة ليست مفتوحة بالفعل)
+      const isAlreadyOpen = this.activeTrades.find(
+        (t) => t.symbol === trade.symbol
+      );
+      if (isAlreadyOpen) {
+        console.log(
+          `⚠️ صفقة ${trade.symbol} مفتوحة بالفعل، تجاهل الدخول المكرر`
+        );
+        return;
+      }
+
       this.activeTrades.push(trade);
 
-      // إرسال تقرير مفصل
+      // 4. إرسال التقرير مع إضافة إيموجي الفريم الزمني
       const whaleCount = opportunity.whaleAnalysis.whales?.length || 0;
-      const whaleText =
-        whaleCount >= 3
-          ? `🐋🐋🐋 ${whaleCount}`
-          : whaleCount === 2
-          ? `🐋🐋 ${whaleCount}`
-          : whaleCount === 1
-          ? `🐋 ${whaleCount}`
-          : "لا توجد";
+      const whaleIcons = "🐋".repeat(Math.min(whaleCount, 3));
 
       this.sendTelegram(
-        `🎯 *${trade.symbol} - دخول احترافي*\n\n` +
+        `🚀 *دخول جديد: ${trade.symbol}* [15M]\n\n` +
+          `💵 الحجم: $${trade.size.toFixed(2)}\n` +
           `💰 السعر: $${trade.entryPrice.toFixed(4)}\n` +
-          `🎛️ الثقة: ${trade.confidence.toFixed(1)}%\n` +
-          `📊 RSI: ${trade.rsi.toFixed(
+          `📊 RSI: ${trade.rsi.toFixed(1)} | Vol: ${trade.volumeRatio.toFixed(
             1
-          )} | 📈 حجم: ${trade.volumeRatio.toFixed(1)}x\n` +
-          `${whaleText} حيتان\n` +
-          `🛑 الستوب: $${trade.stopLoss.toFixed(4)} (${(
-            (1 - trade.stopLoss / trade.entryPrice) *
-            100
-          ).toFixed(2)}%)\n` +
-          `🎯 الهدف: $${trade.takeProfit.toFixed(4)} (${(
-            (trade.takeProfit / trade.entryPrice - 1) *
-            100
-          ).toFixed(2)}%)\n` +
-          `📈 نسبة: ${opportunity.targets.riskRewardRatio.toFixed(2)}\n\n` +
-          `✅ *أسباب القرار:*\n${trade.reasons
-            .slice(0, 3)
-            .map((r) => `• ${r}`)
-            .join("\n")}`
+          )}x\n` +
+          `${whaleIcons} (${whaleCount}) حيتان\n` +
+          `🛡️ الستوب: $${trade.stopLoss.toFixed(4)}\n` +
+          `🎯 الهدف: $${trade.takeProfit.toFixed(4)}\n\n` +
+          `📝 *السبب الرئيسي:* ${trade.reasons[0]}`
       );
 
       this.startProfessionalMonitoring(trade);
     } catch (error) {
-      this.sendTelegram(`❌ خطأ في التنفيذ: ${error.message}`);
+      console.error("❌ خطأ تنفيذ:", error);
     }
   }
 
@@ -843,10 +829,10 @@ class ProfessionalTradingSystem {
 
     // 2. تفعيل التريلينج المعتمد على ATR
     // سنبدأ في ملاحقة السعر بعد تحقيق ربح بسيط (مثلاً 0.4%)
-    if (currentProfit > 0.4) {
+    if (currentProfit > 0.5) {
       // نستخدم معامل 2.0x ATR للملاحقة.
       // السعر الجديد للستوب = السعر الحالي - (2 * ATR)
-      const atrTrailingStopPrice = currentPrice - activeATR * 2.0;
+      const atrTrailingStopPrice = currentPrice - activeATR * 1.8;
 
       // الحماية: نحدث الستوب لوز فقط إذا كان السعر الجديد "أعلى" من الحالي
       // (عشان الستوب يفضل يرفع لفوق وما ينزلش تحت أبداً)
@@ -866,18 +852,36 @@ class ProfessionalTradingSystem {
     const obDynamics = this.analyzeOrderBookDynamics(trade.symbol, orderBook);
 
     // تعديل شرط انهيار الجدار في دالة shouldExit
-    if (trade.wallPrice && netProfit > -0.3) {
-      // رفعنا حد السماحية قليلاً من -0.2 إلى -0.4
+    if (trade.wallPrice) {
       const currentWall = orderBook.bids.find(
         (b) => Math.abs(b[0] - trade.wallPrice) < trade.entryPrice * 0.0001
       );
 
-      // بدلاً من الخروج عند 30% من الحجم، لنجعلها أكثر مرونة 20%
-      if (
-        !currentWall ||
-        currentWall[0] * currentWall[1] < trade.initialWallVolume * 0.1
-      ) {
-        return { exit: true, reason: "WALL_LIQUIDITY_EVAPORATED" };
+      const currentWallVolume = currentWall
+        ? currentWall[0] * currentWall[1]
+        : 0;
+      const wallVolumeRatio = currentWallVolume / trade.initialWallVolume;
+
+      // 🛡️ التعديل الاحترافي:
+      // لا تخرج لمجرد اختفاء الجدار إلا إذا تحقق أحد الشرطين:
+      if (wallVolumeRatio < 0.1) {
+        // الجدار اختفى (أقل من 10%)
+
+        // 1. إما أن السعر بدأ بالفعل يهبط ويقترب من سعر دخولك (خطر حقيقي)
+        const priceDropping = currentPrice < trade.entryPrice * 1.0005;
+
+        // 2. أو أن ميزان القوى في الأوردر بوك انقلب تماماً لصالح البائعين
+        const heavySellPressure = obDynamics.imbalance < 0.4;
+
+        if (priceDropping || heavySellPressure) {
+          return { exit: true, reason: "WALL_LIQUIDITY_EVAPORATED" };
+        } else {
+          // إذا اختفى الجدار والسعر لسه "طاير" فوق، كمل مع الصفقة!
+          // الحوت غالباً سحب طلبه ليعيد وضعه في سعر أعلى (Chase)
+          console.log(
+            `⚠️ ${trade.symbol}: الجدار اختفى لكن السعر قوي، مستمرون...`
+          );
+        }
       }
     }
     // 3. ملاحقة الربح الذكية (Smart Trailing)
@@ -920,13 +924,22 @@ class ProfessionalTradingSystem {
 
     // 6. خروج "ضعف النبض" (Low Momentum)
     // إذا كنت في ربح بسيط والسيولة انقلبت فجأة ضدك (Imbalance < 0.5)
-    if (netProfit > 0.15 && obDynamics.imbalance < 0.5) {
+    if (netProfit > 0.5 && obDynamics.imbalance < 0.4) {
       return { exit: true, reason: "SELL_PRESSURE_DETECTED" };
     }
 
     // 7. إدارة الوقت (Time-Based)
+    // في دالة shouldExit - البند رقم 7
     if (Date.now() - trade.entryTime > CONFIG.MAX_MONITOR_TIME) {
-      return { exit: true, reason: "TIME_LIMIT_REACHED" };
+      if (netProfit < 0.2) {
+        // إذا الربح ضعيف أو خاسر، اخرج
+        return { exit: true, reason: "TIME_LIMIT_REACHED" };
+      } else {
+        // إذا رابح، استمر في المراقبة ولا تخرج زمنياً
+        console.log(
+          `⏳ ${trade.symbol}: انتهى الوقت لكننا في ربح جيد، سنستمر مع التريلينج...`
+        );
+      }
     }
 
     return { exit: false, reason: "" };
