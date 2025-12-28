@@ -788,25 +788,14 @@ class ProfessionalTradingSystem {
       const whaleCount = opportunity.whaleAnalysis.whales?.length || 0;
       const whaleIcons = "🐋".repeat(Math.min(whaleCount, 3));
 
-      // استبدل الجزء الخاص بالإرسال بهذا الكود
-      const reasonText =
-        trade.reasons && trade.reasons.length > 0
-          ? trade.reasons[0]
-          : "تحليل استراتيجية";
-
-      const telegramMsg = [
-        `🚀 *دخول جديد: ${trade.symbol}* [15M]`,
-        `💵 الحجم: $${trade.size.toFixed(2)}`,
-        `💰 السعر: $${trade.entryPrice.toFixed(4)}`,
-        `🛡️ الستوب: $${trade.stopLoss.toFixed(4)}`,
-        `🎯 الهدف: $${trade.takeProfit.toFixed(4)}`,
-        `📝 *السبب:* ${reasonText}`,
-        whaleCount > 0
-          ? `\n${whaleIcons} *تحليل الحيتان:* ${whaleCount} حيتان نشطة`
-          : "",
-      ].join("\n");
-
-      this.sendTelegram(telegramMsg);
+      this.sendTelegram(
+        `🚀 *دخول جديد: ${trade.symbol}* [15M]\n\n` +
+          `💵 الحجم: $${trade.size.toFixed(2)}\n` +
+          `💰 السعر: $${trade.entryPrice.toFixed(4)}\n` +
+          `🛡️ الستوب: $${trade.stopLoss.toFixed(4)}\n` +
+          `🎯 الهدف: $${trade.takeProfit.toFixed(4)}\n` +
+          `📝 *السبب:* ${trade.reasons[0]}\n`
+      );
 
       this.startProfessionalMonitoring(trade);
     } catch (error) {
