@@ -419,65 +419,78 @@ class ProfessionalTradingSystem {
   }
 
   analyzeOrderBookDynamics(symbol, orderBook) {
-    if (
-      !orderBook ||
-      !orderBook.bids ||
-      !orderBook.asks ||
-      orderBook.bids.length < 15
-    )
+    if (!orderBook?.bids || !orderBook?.asks || orderBook.bids.length < 15) {
       return { score: 0, imbalance: 0, reasons: [], strongWall: null };
+    }
 
-    // 1. حساب السيولة (Imbalance) - عمق 15 لزيادة الدقة في العملات الكبيرة
+    // 1. حساب الاختلال (Imbalance) بدقة
     const bidVolume = orderBook.bids
       .slice(0, 15)
-      .reduce((sum, b) => sum + b[0] * b[1], 0);
+      .reduce((s, b) => s + b[0] * b[1], 0);
     const askVolume = orderBook.asks
       .slice(0, 15)
-      .reduce((sum, a) => sum + a[0] * a[1], 0);
+      .reduce((s, a) => s + a[0] * a[1], 0);
     const imbalance = askVolume > 0 ? bidVolume / askVolume : 0;
 
     let score = 0;
     const reasons = [];
 
-    // 2. تقييم الاختلال (Imbalance Score)
     if (imbalance > 2.5) {
       score += 30;
       reasons.push(`🌊 سيولة شراء (Imbalance: ${imbalance.toFixed(1)}x)`);
     } else if (imbalance < 0.5) {
-      score -= 40; // عقوبة قوية لمنع الدخول أو الاستمرار في صفقة مهددة
+      score -= 40;
     }
 
-    // 3. تحديد عتبة الجدار بناءً على العملة (Dynamic Threshold)
+    // 2. تحديد عتبة الجدار الديناميكية
     let wallThreshold = 100000;
-    if (symbol.startsWith("BTC")) wallThreshold = 1500000;
-    if (symbol.startsWith("ETH")) wallThreshold = 700000;
-    if (symbol.startsWith("SOL")) wallThreshold = 250000;
-    if (symbol.startsWith("BNB")) wallThreshold = 200000;
+    if (symbol.includes("BTC")) wallThreshold = 1500000;
+    else if (symbol.includes("ETH")) wallThreshold = 700000;
+    else if (symbol.includes("SOL")) wallThreshold = 250000;
 
-    // 4. رصد أقوى جدار دعم وتخزين بياناته (سعر وحجم)
-    let strongWall = null;
-    let maxWallValue = 0;
+    // 3. تحليل "تكتل السيولة" (Liquidity Cluster Analysis)
+    // بدلاً من البحث عن أكبر جدار، سنبحث عن المنطقة التي يتركز فيها المال
+    let bestCluster = { price: 0, volume: 0, count: 0 };
 
-    orderBook.bids.slice(0, 15).forEach((bid) => {
-      const wallValue = bid[0] * bid[1];
-      if (wallValue > wallThreshold && wallValue > maxWallValue) {
-        maxWallValue = wallValue;
-        strongWall = {
-          price: bid[0],
-          volume: wallValue,
-          formatted: (wallValue / 1000).toFixed(0) + "K",
-        };
+    // نمر على أول 10 مستويات فقط (المنطقة الأكثر تأثيراً)
+    for (let i = 0; i < 10; i++) {
+      const price = orderBook.bids[i][0];
+      const volume = price * orderBook.bids[i][1];
+
+      // إذا وجدنا جداراً قوياً، نبحث عن السيولة المحيطة به في نطاق 0.1%
+      if (volume > wallThreshold * 0.7) {
+        let clusterVol = 0;
+        let clusterCount = 0;
+
+        orderBook.bids.slice(0, 15).forEach((b) => {
+          if (Math.abs(b[0] - price) / price < 0.001) {
+            // نطاق 0.1%
+            clusterVol += b[0] * b[1];
+            clusterCount++;
+          }
+        });
+
+        if (clusterVol > bestCluster.volume) {
+          bestCluster = { price, volume: clusterVol, count: clusterCount };
+        }
       }
-    });
+    }
 
-    if (strongWall) {
-      score += 20;
+    // 4. تقييم التكتل
+    if (bestCluster.volume > wallThreshold) {
+      score += 25;
+      const formattedVol = (bestCluster.volume / 1000).toFixed(0) + "K";
       reasons.push(
-        `🧱 جدار دعم صلب ($${strongWall.formatted}) عند ${strongWall.price}`
+        `🧱 تكتل سيولة (${bestCluster.count} جدران) بقوة $${formattedVol}`
       );
     }
 
-    return { score, imbalance, reasons, strongWall };
+    return {
+      score,
+      imbalance,
+      reasons,
+      strongWall: bestCluster.volume > 0 ? bestCluster : null,
+    };
   }
   // ==================== تحليل الفرص ====================
   analyzeForEntry(symbol, orderBook) {
@@ -848,20 +861,19 @@ class ProfessionalTradingSystem {
         ? currentWall[0] * currentWall[1]
         : 0;
       const wallVolumeRatio = currentWallVolume / trade.initialWallVolume;
-
+      // استبدل الجزء الخاص بـ wallVolumeRatio < 0.1 بهذا المنطق:
       if (wallVolumeRatio < 0.1) {
-        // 🛡️ الفلتر الجديد: لا تخرج لمجرد سحب الحوت لطلبه
-        // اخرج فقط إذا اقترب السعر من الدخول (تحول الربح لخطر) أو انقلبت السيولة لبيع
-        const isPriceStruggling = currentPrice < trade.entryPrice * 1.001;
-        const isSellPressureHuge = obDynamics.imbalance < 0.3; // ضغط بيع عنيف
+        // 🛡️ التعديل: لا نخرج إلا إذا تأكدنا أن اختفاء الجدار تبعه "ضغط بيع" حقيقي أو "سعر سلبي"
+        const isActuallyLosing = currentPrice < trade.entryPrice * 0.9985; // نزل تحت الدخول بـ 0.15%
+        const isImbalanceFlipped = obDynamics.imbalance < 0.8; // السيولة مالت للبيع
 
-        if (isPriceStruggling && isSellPressureHuge) {
-          return { exit: true, reason: "WALL_LIQUIDITY_EVAPORATED" };
+        if (isActuallyLosing && isImbalanceFlipped) {
+          return { exit: true, reason: "CONFIRMED_WALL_EVAPORATION" };
         } else {
-          // حوت سحب طلبه والسعر لا يزال قوياً؟ استمر!
+          // إذا اختفى الجدار والسعر لا يزال فوق الدخول أو السيولة شرائية، "نصبر"
           if (!trade.loggedWallWarning) {
             console.log(
-              `⚠️ ${trade.symbol}: الحوت سحب طلبه (Spoofing) لكن السعر متماسك.. بقاء.`
+              `⚠️ ${trade.symbol}: الحوت سحب طلبه، لكن السعر متماسك والسيولة جيدة. استمرار...`
             );
             trade.loggedWallWarning = true;
           }
