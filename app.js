@@ -285,17 +285,13 @@ class ProfessionalTradingSystem {
     const ob = this.analyzeOrderBookDynamics(symbol, orderBook);
     totalScore += ob.score;
     reasons.push(...ob.reasons);
-    if (ob.imbalance < 0.4) {
-      totalScore -= 30; // خصم نقاط بدل تصفير السكور لترك فرصة للمؤشرات الأخرى
-      warnings.push("⚠️ ضغط بيع قوي في الـ Order Book");
-    }
 
     // --- 2. Dynamic RSI (نسبة القوة النسبية المتكيفة) ---
     // فكرة: هل الـ RSI الحالي أقل من متوسط الـ RSI لآخر فترة؟ (يعني العملة رخيصة حالياً)
     const rsiSMA = indicators.rsiSMA20 || 50; // سنحتاج لإضافة rsiSMA في حساب المؤشرات
     const rsiDiff = indicators.rsi - rsiSMA;
 
-    if (rsiDiff < -5) {
+    if (rsiDiff < -10) {
       // الـ RSI الحالي أقل من المتوسط بـ 5 درجات (فرصة شراء)
       totalScore += 25;
       reasons.push(
@@ -391,19 +387,20 @@ class ProfessionalTradingSystem {
       }
     }
 
-    if (whales.length >= 3) {
-      score += 25;
+    if (whales.length >= 10) {
+      score += 35;
       reasons.push(`🐋🐋🐋 ${whales.length} حيتان نشطة`);
     } else if (whales.length > 0) {
-      score += 15;
+      score += 2.5 * whales.length;
       reasons.push(`🐋 رصد ${whales.length} حوت`);
     }
 
-    if (whales.filter((w) => w.position <= 5).length >= 2) {
+    // هؤلاء هم الحيتان الذين سيتنفذ أمرهم فوراً إذا نزل السعر قليلاً
+    const frontLineWhales = whales.filter((w) => w.position <= 3).length;
+    if (frontLineWhales >= 1) {
       score += 15;
-      reasons.push("🛡️ جدار دعم قوي قريب");
+      reasons.push("🛡️ حوت هجومي في الخط الأول (دعم مباشر)");
     }
-
     this.dbManager
       .saveWhaleSighting(symbol, {
         count: whales.length,
@@ -443,11 +440,11 @@ class ProfessionalTradingSystem {
     const reasons = [];
 
     // 2. تقييم الاختلال (Imbalance Score)
-    if (imbalance > 1.8) {
+    if (imbalance > 2.5) {
       score += 30;
       reasons.push(`🌊 سيولة شراء (Imbalance: ${imbalance.toFixed(1)}x)`);
-    } else if (imbalance < 0.4) {
-      score -= 50; // عقوبة قوية لمنع الدخول أو الاستمرار في صفقة مهددة
+    } else if (imbalance < 0.5) {
+      score -= 40; // عقوبة قوية لمنع الدخول أو الاستمرار في صفقة مهددة
     }
 
     // 3. تحديد عتبة الجدار بناءً على العملة (Dynamic Threshold)
