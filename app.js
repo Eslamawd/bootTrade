@@ -25,7 +25,7 @@ const CONFIG = {
   COOLDOWN_TIME: 600000, // 5 دقائق
 
   // إعدادات المؤشرات
-  CANDLE_LIMIT: 220,
+  CANDLE_LIMIT: 300,
   TIMEFRAME: "15m",
 
   // إعدادات مصفوفة القرار
@@ -98,7 +98,7 @@ class ProfessionalTradingSystem {
         CONFIG.CANDLE_LIMIT
       );
 
-      if (dbCandles && dbCandles.length >= 50) {
+      if (dbCandles && dbCandles.length >= 220) {
         // تحويل البيانات من قاعدة البيانات للصيغة المطلوبة
         const candles = dbCandles
           .map((c) => [
@@ -210,7 +210,7 @@ class ProfessionalTradingSystem {
       return null;
 
     const candles = this.marketData[symbol].candles;
-    if (candles.length < 50) return null;
+    if (candles.length < 220) return null;
 
     const sortedCandles = [...candles].sort((a, b) => a[0] - b[0]);
     const completedCandles = sortedCandles.slice(0, -1);
@@ -310,7 +310,7 @@ class ProfessionalTradingSystem {
       indicators.volumeRatio > 2.0 &&
       indicators.close > indicators.prevClose
     ) {
-      totalScore += 25;
+      totalScore += 20;
       reasons.push(
         `🔥 انفجار فوليوم غير مسبوق (${indicators.volumeRatio.toFixed(1)}x)`
       );
@@ -318,7 +318,7 @@ class ProfessionalTradingSystem {
       indicators.volumeRatio > 2.0 &&
       indicators.close <= indicators.prevClose
     ) {
-      totalScore += 25;
+      totalScore += 20;
     }
 
     // --- 4. Whale Power (قوة الحيتان) ---
@@ -345,6 +345,13 @@ class ProfessionalTradingSystem {
     if (isBullish) {
       totalScore += 15;
       reasons.push("🌊 اتجاه صاعد مؤسسي (Price > SMA50 > SMA200)");
+    }
+    const bestBid = orderBook.bids[0][0];
+    const bestAsk = orderBook.asks[0][0];
+    const spread = ((bestAsk - bestBid) / bestBid) * 100;
+    if (spread > 0.15) {
+      totalScore -= 10;
+      warnings.push(`⚠️ سبريد عالي (${spread.toFixed(2)}%)`);
     }
 
     // حساب الـ Confidence النهائي مع سقف 100
@@ -388,7 +395,7 @@ class ProfessionalTradingSystem {
     }
 
     if (whales.length >= 10) {
-      score += 35;
+      score += 25;
       reasons.push(`🐋🐋🐋 ${whales.length} حيتان نشطة`);
     } else if (whales.length > 0) {
       score += 2.5 * whales.length;
@@ -398,7 +405,7 @@ class ProfessionalTradingSystem {
     // هؤلاء هم الحيتان الذين سيتنفذ أمرهم فوراً إذا نزل السعر قليلاً
     const frontLineWhales = whales.filter((w) => w.position <= 3).length;
     if (frontLineWhales >= 1) {
-      score += 15;
+      score += 10;
       reasons.push("🛡️ حوت هجومي في الخط الأول (دعم مباشر)");
     }
     this.dbManager
@@ -436,10 +443,10 @@ class ProfessionalTradingSystem {
     const reasons = [];
 
     if (imbalance > 2.5) {
-      score += 30;
+      score += 25;
       reasons.push(`🌊 سيولة شراء (Imbalance: ${imbalance.toFixed(1)}x)`);
     } else if (imbalance < 0.5) {
-      score -= 40;
+      score -= 30;
     }
 
     // 2. تحديد عتبة الجدار الديناميكية
@@ -478,7 +485,7 @@ class ProfessionalTradingSystem {
 
     // 4. تقييم التكتل
     if (bestCluster.volume > wallThreshold) {
-      score += 25;
+      score += 20;
       const formattedVol = (bestCluster.volume / 1000).toFixed(0) + "K";
       reasons.push(
         `🧱 تكتل سيولة (${bestCluster.count} جدران) بقوة $${formattedVol}`
@@ -587,7 +594,8 @@ class ProfessionalTradingSystem {
     const targets = this.calculateDynamicTargets(
       entryPrice,
       indicators,
-      decision.confidence
+      decision.confidence,
+      obAnalysis
     );
 
     if (!targets || targets.riskRewardRatio < 0.8) return null;
@@ -615,45 +623,58 @@ class ProfessionalTradingSystem {
     };
   }
 
-  calculateDynamicTargets(entryPrice, indicators, confidence) {
-    // 1. حساب ATR (متوسط حركة السعر) أو استبداله بـ 0.8% كحماية
+  calculateDynamicTargets(entryPrice, indicators, confidence, obAnalysis) {
+    // 1. حساب الـ ATR الأساسي (أو 0.8% كقيمة افتراضية)
     const atr = indicators.atr || entryPrice * 0.008;
 
-    // 2. معامل المسافة بناءً على الثقة (Confidence)
-    // إذا كانت الثقة عالية، نقرب الستوب قليلاً. إذا كانت متوسطة، نوسعه.
+    // 2. معامل المسافة بناءً على الثقة
+    // لو الثقة عالية بنخلي الستوب أضيق (2.2)، لو متوسطة بنوسعه (2.8) عشان نتفادى التذبذب
     const multiplier = confidence > 75 ? 2.2 : 2.8;
-    const stopLossDistance = atr * multiplier;
+    let stopLoss = entryPrice - atr * multiplier;
 
-    // 3. حساب الستوب لوز والهدف المبدئي
-    const stopLoss = entryPrice - stopLossDistance;
-    // جعل الهدف دائماً 2.2 ضعف المخاطرة لضمان ربحية طويلة الأمد
-    const takeProfit = entryPrice + stopLossDistance * 2.2;
+    // 3. 🛡️ ميزة "الدرع": الاحتماء خلف تكتل السيولة (Cluster Protection)
+    // لو obAnalysis لقى تكتل جدران قوي تحت سعر الدخول، بنحط الستوب وراه
+    if (obAnalysis?.strongWall && obAnalysis.strongWall.price < entryPrice) {
+      // نضع الستوب تحت سعر التكتل بـ 0.15% (منطقة أمان من الذيول)
+      const wallSafePrice = obAnalysis.strongWall.price * 0.9985;
 
-    // 4. حدود الحماية الصارمة (نسب مئوية)
-    const MIN_SL_PERCENT = 0.008; // حد أدنى للستوب 0.8% (للتنفس)
-    const MIN_TP_PERCENT = 0.015; // حد أدنى للهدف 1.5% (للربح بعد العمولات)
+      // نختار الستوب الأبعد (الأقل سعراً) لضمان أقصى حماية
+      stopLoss = Math.min(stopLoss, wallSafePrice);
+    }
 
-    // تطبيق الحدود:
-    // الستوب لوز لا يجب أن يكون أقرب من 0.8%
-    const finalStopLoss = Math.min(stopLoss, entryPrice * (1 - MIN_SL_PERCENT));
+    // 4. صمامات الأمان المئوية (Limits)
+    const minSLPrice = entryPrice * 0.992; // حد أدنى 0.8% (عشان الستوب ميبقاش لازق في السعر)
+    const maxSLPrice = entryPrice * 0.975; // حد أقصى 2.5% (عشان الخسارة متبقاش كارثية)
 
-    // الهدف لا يجب أن يكون أقل من 1.5%
-    const finalTakeProfit = Math.max(
-      takeProfit,
-      entryPrice * (1 + MIN_TP_PERCENT)
-    );
+    // تطبيق الحدود
+    if (stopLoss > minSLPrice) stopLoss = minSLPrice;
+    if (stopLoss < maxSLPrice) stopLoss = maxSLPrice;
 
-    const riskRewardRatio =
-      (finalTakeProfit - entryPrice) / (entryPrice - finalStopLoss);
+    // 5. حساب الهدف (Take Profit)
+    // بنخلي الهدف دائماً 1.8 إلى 2.0 ضعف المخاطرة (Risk/Reward)
+    const riskAmount = entryPrice - stopLoss;
+    let takeProfit = entryPrice + riskAmount * 2.0;
+
+    // تأكد أن الهدف لا يقل عن 1.5% (عشان نغطي العمولات ونطلع بربح صافي)
+    const minTPPrice = entryPrice * 1.015;
+    if (takeProfit < minTPPrice) takeProfit = minTPPrice;
+
+    // 6. الحسابات النهائية للـ Return
+    const riskRewardRatio = (takeProfit - entryPrice) / (entryPrice - stopLoss);
 
     return {
-      stopLoss: finalStopLoss,
-      takeProfit: finalTakeProfit,
+      stopLoss: Number(stopLoss.toFixed(8)),
+      takeProfit: Number(takeProfit.toFixed(8)),
       riskRewardRatio,
-      atrBased: !!indicators.atr,
       atrValue: atr,
+      wallProtected: !!(
+        obAnalysis?.strongWall && stopLoss <= obAnalysis.strongWall.price
+      ),
+      stopLossPercent:
+        (((entryPrice - stopLoss) / entryPrice) * 100).toFixed(2) + "%",
     };
   }
+
   // ==================== تنفيذ الصفقات ====================
 
   // دالة لجلب الرصيد الحقيقي من حسابك
