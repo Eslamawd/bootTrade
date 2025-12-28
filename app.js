@@ -788,17 +788,23 @@ class ProfessionalTradingSystem {
       const whaleCount = opportunity.whaleAnalysis.whales?.length || 0;
       const whaleIcons = "🐋".repeat(Math.min(whaleCount, 3));
 
-      this.sendTelegram(
+      // تأكد من استخراج النص من المصفوفة بشكل آمن
+      const tradeReason = Array.isArray(trade.reasons)
+        ? trade.reasons[0]
+        : "تحليل فني";
+
+      const message =
         `🚀 *دخول جديد: ${trade.symbol}* [15M]\n\n` +
-          `💵 الحجم: $${trade.size.toFixed(2)}\n` +
-          `💰 السعر: $${trade.entryPrice.toFixed(4)}\n` +
-          `🛡️ الستوب: $${trade.stopLoss.toFixed(4)}\n` +
-          `🎯 الهدف: $${trade.takeProfit.toFixed(4)}\n` +
-          `📝 *السبب:* ${trade.reasons[0]}\n` +
-          (whaleCount > 0
-            ? `\n${whaleIcons} *تحليل الحيتان:* ${whaleCount} حيتان نشطة`
-            : "")
-      );
+        `💵 الحجم: $${trade.size.toFixed(2)}\n` +
+        `💰 السعر: $${trade.entryPrice.toFixed(4)}\n` +
+        `🛡️ الستوب: $${trade.stopLoss.toFixed(4)}\n` +
+        `🎯 الهدف: $${trade.takeProfit.toFixed(4)}\n` +
+        `📝 *السبب:* ${String(tradeReason)}\n` +
+        (whaleCount > 0
+          ? `\n${whaleIcons} *تحليل الحيتان:* ${whaleCount} حيتان نشطة`
+          : "");
+
+      this.sendTelegram(message);
 
       this.startProfessionalMonitoring(trade);
     } catch (error) {
