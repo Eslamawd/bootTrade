@@ -660,32 +660,33 @@ class ProfessionalTradingSystem {
   async executeTrade(opportunity) {
     try {
       const myBalance = await this.getMyActualBalance();
-      // 1. فحص رصيد الأمان (تجنب الحسابات المصفرة)
+
+      // 1. فحص رصيد الأمان
       if (myBalance < 15) {
         console.log("⚠️ الرصيد الحالي منخفض جداً لفتح صفقة جديدة");
         return;
       }
 
-      // 2. معادلة حجم الصفقة الذكية
-      const baseRisk = 0.1; // رفعنا المخاطرة لـ 10% بما أن الفريم أكبر (15د)
+      // 2. معادلة حجم الصفقة الذكية (تم تحسينها)
+      const baseRisk = 0.1;
       const confidenceFactor = opportunity.confidence / 100;
-      // تقوية تأثير الحيتان في المعادلة
       const whaleFactor = Math.min(
-        2.0, // الحد الأقصى لمضاعفة الصفقة
+        2.0,
         1 + (opportunity.whaleAnalysis.whales?.length || 0) * 0.2
       );
 
       let tradeSize = myBalance * baseRisk * confidenceFactor * whaleFactor;
 
       // حماية الرصيد وتوزيعه
-      tradeSize = Math.min(tradeSize, myBalance / 2); // لا تدخل بأكثر من نصف الرصيد في صفقة واحدة
-      tradeSize = Math.max(tradeSize, 11); // الحد الأدنى لباينانس هو 10-11 دولار
+      tradeSize = Math.min(tradeSize, myBalance / 2);
+      tradeSize = Math.max(tradeSize, 11);
 
       const trade = {
         id: `TRADE_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
         symbol: opportunity.symbol,
         entryPrice: opportunity.entryPrice,
-        entryTime: new Date().toISOString(), // تنسيق ISO لقاعدة البيانات
+        // ✅ إصلاح: استخدم Date.now() مباشرة لضمان عدم ظهور NaN في الحسابات
+        entryTime: Date.now(),
         size: tradeSize,
         wallPrice: opportunity.wallPrice,
         initialWallVolume: opportunity.initialWallVolume,
@@ -700,26 +701,20 @@ class ProfessionalTradingSystem {
         atr: opportunity.indicators.atr,
         highestPrice: opportunity.entryPrice,
         currentStopLoss: opportunity.stopLoss,
-        // سجل تتبع لتطور الستوب لوز
         stopLossHistory: [
           { price: opportunity.stopLoss, time: Date.now(), reason: "Initial" },
         ],
       };
 
-      // 3. منع الازدواجية (تأكد أن العملة ليست مفتوحة بالفعل)
+      // 3. منع الازدواجية
       const isAlreadyOpen = this.activeTrades.find(
         (t) => t.symbol === trade.symbol
       );
-      if (isAlreadyOpen) {
-        console.log(
-          `⚠️ صفقة ${trade.symbol} مفتوحة بالفعل، تجاهل الدخول المكرر`
-        );
-        return;
-      }
+      if (isAlreadyOpen) return;
 
       this.activeTrades.push(trade);
 
-      // 4. إرسال التقرير مع إضافة إيموجي الفريم الزمني
+      // 4. إرسال التقرير
       const whaleCount = opportunity.whaleAnalysis.whales?.length || 0;
       const whaleIcons = "🐋".repeat(Math.min(whaleCount, 3));
 
@@ -727,13 +722,9 @@ class ProfessionalTradingSystem {
         `🚀 *دخول جديد: ${trade.symbol}* [15M]\n\n` +
           `💵 الحجم: $${trade.size.toFixed(2)}\n` +
           `💰 السعر: $${trade.entryPrice.toFixed(4)}\n` +
-          `📊 RSI: ${trade.rsi.toFixed(1)} | Vol: ${trade.volumeRatio.toFixed(
-            1
-          )}x\n` +
-          `${whaleIcons} (${whaleCount}) حيتان\n` +
           `🛡️ الستوب: $${trade.stopLoss.toFixed(4)}\n` +
-          `🎯 الهدف: $${trade.takeProfit.toFixed(4)}\n\n` +
-          `📝 *السبب الرئيسي:* ${trade.reasons[0]}`
+          `🎯 الهدف: $${trade.takeProfit.toFixed(4)}\n` +
+          `📝 *السبب:* ${trade.reasons[0]}`
       );
 
       this.startProfessionalMonitoring(trade);
@@ -848,10 +839,9 @@ class ProfessionalTradingSystem {
   }
 
   shouldExit(trade, currentPrice, netProfit, orderBook) {
-    // 1. تحليل الأوردر بوك اللحظي ورصد حالة الجدران
     const obDynamics = this.analyzeOrderBookDynamics(trade.symbol, orderBook);
 
-    // تعديل شرط انهيار الجدار في دالة shouldExit
+    // 1. منطق "تبخر الجدار" المطور (Anti-Spoofing)
     if (trade.wallPrice) {
       const currentWall = orderBook.bids.find(
         (b) => Math.abs(b[0] - trade.wallPrice) < trade.entryPrice * 0.0001
@@ -862,42 +852,39 @@ class ProfessionalTradingSystem {
         : 0;
       const wallVolumeRatio = currentWallVolume / trade.initialWallVolume;
 
-      // 🛡️ التعديل الاحترافي:
-      // لا تخرج لمجرد اختفاء الجدار إلا إذا تحقق أحد الشرطين:
       if (wallVolumeRatio < 0.1) {
-        // الجدار اختفى (أقل من 10%)
+        // 🛡️ الفلتر الجديد: لا تخرج لمجرد سحب الحوت لطلبه
+        // اخرج فقط إذا اقترب السعر من الدخول (تحول الربح لخطر) أو انقلبت السيولة لبيع
+        const isPriceStruggling = currentPrice < trade.entryPrice * 1.001;
+        const isSellPressureHuge = obDynamics.imbalance < 0.3; // ضغط بيع عنيف
 
-        // 1. إما أن السعر بدأ بالفعل يهبط ويقترب من سعر دخولك (خطر حقيقي)
-        const priceDropping = currentPrice < trade.entryPrice * 1.0005;
-
-        // 2. أو أن ميزان القوى في الأوردر بوك انقلب تماماً لصالح البائعين
-        const heavySellPressure = obDynamics.imbalance < 0.4;
-
-        if (priceDropping || heavySellPressure) {
+        if (isPriceStruggling && isSellPressureHuge) {
           return { exit: true, reason: "WALL_LIQUIDITY_EVAPORATED" };
         } else {
-          // إذا اختفى الجدار والسعر لسه "طاير" فوق، كمل مع الصفقة!
-          // الحوت غالباً سحب طلبه ليعيد وضعه في سعر أعلى (Chase)
-          console.log(
-            `⚠️ ${trade.symbol}: الجدار اختفى لكن السعر قوي، مستمرون...`
-          );
+          // حوت سحب طلبه والسعر لا يزال قوياً؟ استمر!
+          if (!trade.loggedWallWarning) {
+            console.log(
+              `⚠️ ${trade.symbol}: الحوت سحب طلبه (Spoofing) لكن السعر متماسك.. بقاء.`
+            );
+            trade.loggedWallWarning = true;
+          }
         }
       }
     }
-    // 3. ملاحقة الربح الذكية (Smart Trailing)
-    // بدلاً من ATR فقط، نرفع الستوب لوز خلف جدران الدعم الجديدة التي تظهر أثناء الصعود
+
+    // 2. ملاحقة الربح خلف "جدران الدعم الحية"
     if (
       obDynamics.strongWall &&
       obDynamics.strongWall.price > trade.currentStopLoss &&
-      obDynamics.strongWall.price < currentPrice
+      obDynamics.strongWall.price < currentPrice * 0.998 // تأمين مسافة 0.2%
     ) {
-      trade.currentStopLoss = obDynamics.strongWall.price * 0.999;
+      trade.currentStopLoss = obDynamics.strongWall.price * 0.9995;
       console.log(
-        `🛡️ ${trade.symbol}: تم رفع حماية الستوب لوز خلف جدار جديد عند ${trade.currentStopLoss}`
+        `🛡️ ${trade.symbol}: رفع الستوب خلف حوت جديد عند ${trade.currentStopLoss}`
       );
     }
 
-    // 4. الخروج بناءً على الستوب لوز الحالي (المتحرك)
+    // 3. الخروج بناءً على الستوب لوز (أهم نقطة حماية)
     if (currentPrice <= trade.currentStopLoss) {
       return {
         exit: true,
@@ -908,37 +895,33 @@ class ProfessionalTradingSystem {
       };
     }
 
-    // 5. منطق Let Profits Run (تجاوز الهدف)
+    // 4. استراتيجية "دع الأرباح تجري" (Let Profits Run)
     if (currentPrice >= trade.takeProfit) {
-      // إذا كان ميزان القوى (Imbalance) لا يزال قوياً جداً (> 2.0)، لا تخرج
-      if (obDynamics.imbalance > 2.0) {
-        trade.currentStopLoss = currentPrice * 0.995; // ضع ستوب قريب (0.5%)
-        trade.takeProfit = currentPrice * 1.01; // ارفع الهدف 1% إضافي
+      // إذا كانت السيولة لا تزال انفجارية، لا تخرج بل لاحق السعر
+      if (obDynamics.imbalance > 2.5) {
+        trade.currentStopLoss = currentPrice * 0.997; // ستوب لوز قريب جداً (تأمين الربح)
+        trade.takeProfit = currentPrice * 1.008; // رفع الهدف بنسبة إضافية
         console.log(
-          `🚀 ${trade.symbol}: السيولة جبارة! مستمرون لملاحقة أرباح أعلى...`
+          `🚀 ${trade.symbol}: سيولة جبارة (${obDynamics.imbalance.toFixed(
+            1
+          )}x)، تم ترحيل الهدف.`
         );
       } else {
         return { exit: true, reason: "TAKE_PROFIT_TARGET_REACHED" };
       }
     }
 
-    // 6. خروج "ضعف النبض" (Low Momentum)
-    // إذا كنت في ربح بسيط والسيولة انقلبت فجأة ضدك (Imbalance < 0.5)
-    if (netProfit > 0.5 && obDynamics.imbalance < 0.4) {
-      return { exit: true, reason: "SELL_PRESSURE_DETECTED" };
+    // 5. فلتر "الخروج الذكي" عند ضعف الزخم
+    // تم تعديلها: لا يخرج إلا إذا حققنا ربحاً يغطي العمولات على الأقل
+    if (netProfit > 0.35 && obDynamics.imbalance < 0.25) {
+      return { exit: true, reason: "MOMENTUM_LOST_EXIT" };
     }
 
-    // 7. إدارة الوقت (Time-Based)
-    // في دالة shouldExit - البند رقم 7
-    if (Date.now() - trade.entryTime > CONFIG.MAX_MONITOR_TIME) {
-      if (netProfit < 0.2) {
-        // إذا الربح ضعيف أو خاسر، اخرج
+    // 6. إدارة الوقت (Time-Based)
+    const tradeDurationMinutes = (Date.now() - trade.entryTime) / 60000;
+    if (tradeDurationMinutes > CONFIG.MAX_MONITOR_TIME) {
+      if (netProfit < 0.1) {
         return { exit: true, reason: "TIME_LIMIT_REACHED" };
-      } else {
-        // إذا رابح، استمر في المراقبة ولا تخرج زمنياً
-        console.log(
-          `⏳ ${trade.symbol}: انتهى الوقت لكننا في ربح جيد، سنستمر مع التريلينج...`
-        );
       }
     }
 
