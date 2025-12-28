@@ -205,7 +205,7 @@ class ProfessionalTradingSystem {
     return false;
   }
   // ==================== حساب المؤشرات الفنية من البيانات التاريخية ====================
-  calculateTechnicalIndicators(symbol) {
+  async calculateTechnicalIndicators(symbol) {
     if (!this.marketData[symbol] || !this.marketData[symbol].candles)
       return null;
 
@@ -253,6 +253,28 @@ class ProfessionalTradingSystem {
       const lastClose = closes[closes.length - 1]; // الإغلاق الأخير (الحالي)
       const prevClose = closes[closes.length - 2]; // الإغلاق الذي قبله
 
+      const candles48h = this.marketData[symbol].candles.slice(-199); // 96 شمعة (15د) تساوي 24 ساعة
+      const low24h = Math.min(...candles48h.map((c) => c[3])); // أقل سعر
+      const high24h = Math.max(...candles48h.map((c) => c[2])); // أعلى سعر
+
+      const currentPrice = candles[candles.length - 1][4];
+      const pricePosition =
+        ((currentPrice - low24h) / (high24h - low24h)) * 100;
+
+      await this.dbManager.saveTechnicalIndicators(symbol, {
+        rsi: currentRSI,
+        prevRsi: prevRSI,
+        rsiSMA20: currentRsiSMA,
+        close: lastClose,
+        atr: currentATR,
+        prevClose: prevClose,
+        volumeRatio,
+        avgVolume,
+        sma50: sma50Values.pop(),
+        sma200: sma200Values.pop(),
+        pricePosition,
+      });
+
       return {
         rsi: currentRSI,
         prevRsi: prevRSI, // 🆕 مهم لفلتر الـ Momentum
@@ -266,6 +288,7 @@ class ProfessionalTradingSystem {
         sma50: sma50Values.pop(),
         sma200: sma200Values.pop(),
         timestamp: Date.now(),
+        pricePosition,
       };
     } catch (error) {
       console.error(`❌ خطأ في حساب المؤشرات لـ ${symbol}:`, error.message);
@@ -273,13 +296,27 @@ class ProfessionalTradingSystem {
     }
   }
   // ==================== مصفوفة القرار المحدثة ====================
-  calculateDecisionMatrix(symbol, orderBook) {
-    const indicators = this.calculateTechnicalIndicators(symbol);
+  async calculateDecisionMatrix(symbol, orderBook) {
+    const indicators = await this.calculateTechnicalIndicators(symbol);
     if (!indicators) return { confidence: 0, reasons: ["❌ بيانات غير كافية"] };
 
     let totalScore = 0;
     const reasons = [];
     const warnings = [];
+    const pricePosition = indicators.pricePosition;
+    if (pricePosition <= 25) {
+      totalScore += 30; // مرحلة القاع
+      reasons.push(
+        `💎 السعر في أدنى 20% من نطاق الـ 24 ساعة (${pricePosition.toFixed(
+          1
+        )}%)`
+      );
+    } else if (pricePosition >= 70) {
+      totalScore -= 20; // مرحلة القمة
+      warnings.push(
+        `⚠️ السعر متضخم وقريب من أعلى سعر يومي (${pricePosition.toFixed(1)}%)`
+      );
+    }
 
     // --- 1. Order Book Dynamics (السيولة اللحظية) ---
     const ob = this.analyzeOrderBookDynamics(symbol, orderBook);
@@ -364,6 +401,7 @@ class ProfessionalTradingSystem {
       indicators,
       whaleAnalysis: whales,
       volatility: volatilityPct,
+      pricePosition,
     };
   }
 
@@ -500,7 +538,7 @@ class ProfessionalTradingSystem {
     };
   }
   // ==================== تحليل الفرص ====================
-  analyzeForEntry(symbol, orderBook) {
+  async analyzeForEntry(symbol, orderBook) {
     /* ───────────────
      0️⃣ حمايات أساسية
   ─────────────── */
@@ -552,7 +590,7 @@ class ProfessionalTradingSystem {
      3️⃣ Decision Matrix
   ─────────────── */
 
-    const decision = this.calculateDecisionMatrix(symbol, orderBook);
+    const decision = await this.calculateDecisionMatrix(symbol, orderBook);
     if (!decision || decision.confidence < CONFIG.MIN_CONFIDENCE) return null;
 
     const indicators = decision.indicators;
@@ -735,6 +773,7 @@ class ProfessionalTradingSystem {
         stopLossHistory: [
           { price: opportunity.stopLoss, time: Date.now(), reason: "Initial" },
         ],
+        pricePosition: opportunity.pricePosition,
       };
 
       // 3. منع الازدواجية
@@ -755,7 +794,10 @@ class ProfessionalTradingSystem {
           `💰 السعر: $${trade.entryPrice.toFixed(4)}\n` +
           `🛡️ الستوب: $${trade.stopLoss.toFixed(4)}\n` +
           `🎯 الهدف: $${trade.takeProfit.toFixed(4)}\n` +
-          `📝 *السبب:* ${trade.reasons[0]}`
+          `📝 *السبب:* ${trade.reasons[0]}``\n` +
+          (whaleCount > 0
+            ? `\n${whaleIcons} *تحليل الحيتان:* ${whaleCount} حيتان نشطة`
+            : "")
       );
 
       this.startProfessionalMonitoring(trade);
@@ -1212,9 +1254,9 @@ class ProfessionalTradingSystem {
     }, 60000);
 
     // البحث عن فرص كل 5 ثواني
-    setInterval(() => {
-      CONFIG.SYMBOLS.forEach((symbol) => {
-        const opp = this.analyzeForEntry(symbol, this.orderBooks[symbol]);
+    setInterval(async () => {
+      CONFIG.SYMBOLS.forEach(async (symbol) => {
+        const opp = await this.analyzeForEntry(symbol, this.orderBooks[symbol]);
         if (opp) this.executeTrade(opp);
       });
     }, CONFIG.UPDATE_INTERVAL);

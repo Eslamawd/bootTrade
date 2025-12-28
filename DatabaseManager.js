@@ -84,6 +84,30 @@ class DatabaseManager {
       CREATE INDEX IF NOT EXISTS idx_trades_symbol_time ON trades(symbol, exit_time);
       CREATE INDEX IF NOT EXISTS idx_indicators_symbol ON technical_indicators(symbol);
     `);
+    // 2. 🛡️ الذكاء هنا: فحص الأعمدة وإضافتها لو ناقصة
+    await this.checkAndAddColumn("trades", "price_position", "REAL");
+    await this.checkAndAddColumn("trades", "rsi_value", "REAL");
+    await this.checkAndAddColumn("trades", "volume_ratio", "REAL");
+    await this.checkAndAddColumn(
+      "technical_indicators",
+      "price_position_pct",
+      "REAL"
+    );
+
+    console.log("✅ قاعدة البيانات جاهزة ومحدثة بمدرسة إسلام عوض");
+  }
+
+  // دالة مساعدة للفحص التلقائي
+  async checkAndAddColumn(tableName, columnName, columnType) {
+    const tableInfo = await this.db.all(`PRAGMA table_info(${tableName})`);
+    const columnExists = tableInfo.some((col) => col.name === columnName);
+
+    if (!columnExists) {
+      await this.db.exec(
+        `ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnType}`
+      );
+      console.log(`🆕 تم إضافة عمود ${columnName} لجدول ${tableName} بنجاح.`);
+    }
   }
 
   async saveCandle(symbol, candle, timeframe) {
@@ -130,8 +154,8 @@ class DatabaseManager {
         `INSERT INTO trades 
         (trade_id, symbol, entry_price, exit_price, entry_time, exit_time, 
          pnl_percent, pnl_usd, confidence_score, rsi_value, volume_ratio, 
-         whale_power, reasons, stop_loss, take_profit, exit_reason, duration_seconds) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         whale_power, reasons, stop_loss, take_profit, exit_reason, duration_seconds,price_position) 
+        VALUES (?,?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           tradeData.id,
           tradeData.symbol,
@@ -150,6 +174,7 @@ class DatabaseManager {
           tradeData.takeProfit,
           tradeData.exitReason,
           tradeData.duration,
+          tradeData.pricePosition,
         ]
       );
     } catch (error) {
@@ -190,8 +215,8 @@ class DatabaseManager {
         `INSERT OR REPLACE INTO technical_indicators 
         (symbol, timestamp, rsi, atr, volume_ma_20, current_volume, 
          sma_50, sma_200, macd, macd_signal, macd_histogram,
-         bollinger_upper, bollinger_middle, bollinger_lower) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         bollinger_upper, bollinger_middle, bollinger_lower, price_position_pct) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           symbol,
           new Date().toISOString(),
@@ -202,11 +227,12 @@ class DatabaseManager {
           indicators.sma50,
           indicators.sma200,
           indicators.macd,
-          indicators.macdSignal,
-          indicators.macdHistogram,
-          indicators.bollingerUpper,
-          indicators.bollingerMiddle,
-          indicators.bollingerLower,
+          indicators.macdSignal || null,
+          indicators.macdHistogram || null,
+          indicators.bollingerUpper || null,
+          indicators.bollingerMiddle || null,
+          indicators.bollingerLower || null,
+          indicators.pricePosition,
         ]
       );
     } catch (error) {
