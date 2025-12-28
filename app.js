@@ -794,7 +794,8 @@ class ProfessionalTradingSystem {
           `💰 السعر: $${trade.entryPrice.toFixed(4)}\n` +
           `🛡️ الستوب: $${trade.stopLoss.toFixed(4)}\n` +
           `🎯 الهدف: $${trade.takeProfit.toFixed(4)}\n` +
-          `📝 *السبب:* ${trade.reasons}\n`
+          `📝 *السبب:* ${trade.reasons}\n` +
+          `🔮 الثقة: ${trade.confidence}% ${whaleIcons}\n`
       );
 
       this.startProfessionalMonitoring(trade);
