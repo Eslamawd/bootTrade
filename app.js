@@ -21,7 +21,7 @@ const CONFIG = {
   MAX_CONCURRENT_TRADES: 3,
   MAX_SPREAD: 0.0012, // 0.12% أقصى سبريد مقبول
   UPDATE_INTERVAL: 5000, // أبطأ قليلاً لإعطاء فرصة لتحليل البيانات
-  MAX_MONITOR_TIME: 10800000, // ساعتين كحد أقصى
+  MAX_MONITOR_TIME: 180, // ساعتين كحد أقصى
   COOLDOWN_TIME: 600000, // 5 دقائق
 
   // إعدادات المؤشرات
@@ -145,7 +145,7 @@ class ProfessionalTradingSystem {
         };
 
         console.log(`✅ ${symbol}: تم جلب وحفظ ${freshCandles.length} شمعة`);
-        console.log(`${freshCandles}`);
+
         return true;
       }
 
@@ -270,8 +270,8 @@ class ProfessionalTradingSystem {
         prevClose: prevClose,
         volumeRatio,
         avgVolume,
-        sma50: sma50Values.pop(),
-        sma200: sma200Values.pop(),
+        sma50: sma50Values[sma50Values.length - 1],
+        sma200: sma200Values[sma200Values.length - 1],
         pricePosition,
       });
 
@@ -608,6 +608,7 @@ class ProfessionalTradingSystem {
 
     if (spread > CONFIG.MAX_SPREAD) return null;
 
+    const pricePosition = decision.pricePosition;
     /* ───────────────
      5️⃣ تنبيه سوبر حوت
   ─────────────── */
@@ -633,7 +634,8 @@ class ProfessionalTradingSystem {
       entryPrice,
       indicators,
       decision.confidence,
-      obAnalysis
+      obAnalysis,
+      pricePosition
     );
 
     if (!targets || targets.riskRewardRatio < 0.8) return null;
@@ -661,7 +663,13 @@ class ProfessionalTradingSystem {
     };
   }
 
-  calculateDynamicTargets(entryPrice, indicators, confidence, obAnalysis) {
+  calculateDynamicTargets(
+    entryPrice,
+    indicators,
+    confidence,
+    obAnalysis,
+    pricePosition
+  ) {
     // 1. حساب الـ ATR الأساسي (أو 0.8% كقيمة افتراضية)
     const atr = indicators.atr || entryPrice * 0.008;
 
@@ -692,7 +700,11 @@ class ProfessionalTradingSystem {
     // بنخلي الهدف دائماً 1.8 إلى 2.0 ضعف المخاطرة (Risk/Reward)
     const riskAmount = entryPrice - stopLoss;
     let takeProfit = entryPrice + riskAmount * 2.0;
-
+    pricePosition = pricePosition || 50;
+    if (pricePosition <= 25) {
+      // إذا كان السعر في القاع، نزيد الهدف
+      takeProfit = entryPrice + riskAmount * 2.5; // 2.5 بدلاً من 2.0
+    }
     // تأكد أن الهدف لا يقل عن 1.5% (عشان نغطي العمولات ونطلع بربح صافي)
     const minTPPrice = entryPrice * 1.015;
     if (takeProfit < minTPPrice) takeProfit = minTPPrice;
@@ -827,7 +839,9 @@ class ProfessionalTradingSystem {
       const netProfit = currentProfit - feePercent;
 
       // 2. جلب ATR اللحظي لاستخدامه في التريلينج ستوب
-      const currentIndicators = this.calculateTechnicalIndicators(trade.symbol);
+      const currentIndicators = await this.calculateTechnicalIndicators(
+        trade.symbol
+      );
       const activeATR = currentIndicators ? currentIndicators.atr : trade.atr;
 
       // 3. التريلينج ستوب المطور المعتمد على ATR
@@ -1068,7 +1082,7 @@ class ProfessionalTradingSystem {
         const orderBook = this.orderBooks[symbol];
         if (!orderBook) continue;
 
-        const decision = this.calculateDecisionMatrix(symbol, orderBook);
+        const decision = await this.calculateDecisionMatrix(symbol, orderBook);
         if (decision && decision.indicators) {
           validOpportunities.push({
             symbol,
@@ -1101,6 +1115,10 @@ class ProfessionalTradingSystem {
         report += `   • RSI: ${ind.rsi.toFixed(
           1
         )} | حجم: ${ind.volumeRatio.toFixed(1)}x\n`;
+
+        report += `   • ATR: $${ind.atr.toFixed(4)} | موقع السعر: ${
+          item.decision.pricePosition
+        }\n`;
 
         // إضافة معلومة عن الجدران إذا وجدت
         const hasWall = orderBookData.reasons.find((r) => r.includes("🧱"));
@@ -1253,10 +1271,10 @@ class ProfessionalTradingSystem {
 
     // البحث عن فرص كل 5 ثواني
     setInterval(async () => {
-      CONFIG.SYMBOLS.forEach(async (symbol) => {
+      for (const symbol of CONFIG.SYMBOLS) {
         const opp = await this.analyzeForEntry(symbol, this.orderBooks[symbol]);
-        if (opp) this.executeTrade(opp);
-      });
+        if (opp) await this.executeTrade(opp);
+      }
     }, CONFIG.UPDATE_INTERVAL);
 
     // إرسال تقرير إحصائي كل ساعة
