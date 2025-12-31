@@ -675,22 +675,22 @@ class ProfessionalTradingSystem {
 
     // 2. معامل المسافة بناءً على الثقة
     // لو الثقة عالية بنخلي الستوب أضيق (2.2)، لو متوسطة بنوسعه (2.8) عشان نتفادى التذبذب
-    const multiplier = confidence > 75 ? 2.2 : 2.8;
+    const multiplier = confidence > 85 ? 2.5 : 3.0;
     let stopLoss = entryPrice - atr * multiplier;
 
     // 3. 🛡️ ميزة "الدرع": الاحتماء خلف تكتل السيولة (Cluster Protection)
     // لو obAnalysis لقى تكتل جدران قوي تحت سعر الدخول، بنحط الستوب وراه
     if (obAnalysis?.strongWall && obAnalysis.strongWall.price < entryPrice) {
       // نضع الستوب تحت سعر التكتل بـ 0.15% (منطقة أمان من الذيول)
-      const wallSafePrice = obAnalysis.strongWall.price * 0.9985;
+      const wallSafePrice = obAnalysis.strongWall.price * 0.9975;
 
       // نختار الستوب الأبعد (الأقل سعراً) لضمان أقصى حماية
       stopLoss = Math.min(stopLoss, wallSafePrice);
     }
 
     // 4. صمامات الأمان المئوية (Limits)
-    const minSLPrice = entryPrice * 0.992; // حد أدنى 0.8% (عشان الستوب ميبقاش لازق في السعر)
-    const maxSLPrice = entryPrice * 0.975; // حد أقصى 2.5% (عشان الخسارة متبقاش كارثية)
+    const minSLPrice = entryPrice * 0.988; // حد أدنى 0.8% (عشان الستوب ميبقاش لازق في السعر)
+    const maxSLPrice = entryPrice * 0.977; // حد أقصى 2.5% (عشان الخسارة متبقاش كارثية)
 
     // تطبيق الحدود
     if (stopLoss > minSLPrice) stopLoss = minSLPrice;
@@ -699,14 +699,14 @@ class ProfessionalTradingSystem {
     // 5. حساب الهدف (Take Profit)
     // بنخلي الهدف دائماً 1.8 إلى 2.0 ضعف المخاطرة (Risk/Reward)
     const riskAmount = entryPrice - stopLoss;
-    let takeProfit = entryPrice + riskAmount * 2.0;
+    let takeProfit = entryPrice + riskAmount * 2.5;
     pricePosition = pricePosition || 50;
     if (pricePosition <= 25) {
       // إذا كان السعر في القاع، نزيد الهدف
       takeProfit = entryPrice + riskAmount * 2.5; // 2.5 بدلاً من 2.0
     }
     // تأكد أن الهدف لا يقل عن 1.5% (عشان نغطي العمولات ونطلع بربح صافي)
-    const minTPPrice = entryPrice * 1.015;
+    const minTPPrice = entryPrice * 1.018;
     if (takeProfit < minTPPrice) takeProfit = minTPPrice;
 
     // 6. الحسابات النهائية للـ Return
@@ -894,7 +894,7 @@ class ProfessionalTradingSystem {
   updateTrailingStop(trade, currentPrice, currentProfit, activeATR) {
     // 1. تأمين نقطة التعادل (Breakeven)
     // بمجرد وصول الربح لـ 0.3%، ننقل الستوب لوز لمنطقة الدخول
-    if (currentProfit > 0.3 && trade.currentStopLoss < trade.entryPrice) {
+    if (currentProfit > 0.9 && trade.currentStopLoss < trade.entryPrice) {
       trade.currentStopLoss = trade.entryPrice * 1.0005; // الدخول + عمولة بسيطة
       trade.stopLossHistory.push({
         price: trade.currentStopLoss,
@@ -905,10 +905,10 @@ class ProfessionalTradingSystem {
 
     // 2. تفعيل التريلينج المعتمد على ATR
     // سنبدأ في ملاحقة السعر بعد تحقيق ربح بسيط (مثلاً 0.4%)
-    if (currentProfit > 0.5) {
+    if (currentProfit > 1.3) {
       // نستخدم معامل 2.0x ATR للملاحقة.
       // السعر الجديد للستوب = السعر الحالي - (2 * ATR)
-      const atrTrailingStopPrice = currentPrice - activeATR * 1.8;
+      const atrTrailingStopPrice = currentPrice - activeATR * 2.2;
 
       // الحماية: نحدث الستوب لوز فقط إذا كان السعر الجديد "أعلى" من الحالي
       // (عشان الستوب يفضل يرفع لفوق وما ينزلش تحت أبداً)
@@ -926,86 +926,74 @@ class ProfessionalTradingSystem {
   shouldExit(trade, currentPrice, netProfit, orderBook) {
     const obDynamics = this.analyzeOrderBookDynamics(trade.symbol, orderBook);
 
-    // 1. منطق "تبخر الجدار" المطور (Anti-Spoofing)
+    // 1. 🛡️ منطق "تبخر الجدار" (المصيدة): تعديل للصبر
     if (trade.wallPrice) {
       const currentWall = orderBook.bids.find(
         (b) => Math.abs(b[0] - trade.wallPrice) < trade.entryPrice * 0.0001
       );
-
       const currentWallVolume = currentWall
         ? currentWall[0] * currentWall[1]
         : 0;
       const wallVolumeRatio = currentWallVolume / trade.initialWallVolume;
-      // استبدل الجزء الخاص بـ wallVolumeRatio < 0.1 بهذا المنطق:
+
       if (wallVolumeRatio < 0.1) {
-        // 🛡️ التعديل: لا نخرج إلا إذا تأكدنا أن اختفاء الجدار تبعه "ضغط بيع" حقيقي أو "سعر سلبي"
-        const isActuallyLosing = currentPrice < trade.entryPrice * 0.9985; // نزل تحت الدخول بـ 0.15%
-        const isImbalanceFlipped = obDynamics.imbalance < 0.8; // السيولة مالت للبيع
+        // التعديل: لو الحوت سحب طلبه بس السعر لسه أخضر والسيولة قوية، مش هنخرج
+        const isActuallyLosing = currentPrice < trade.entryPrice * 0.997; // وسعنا مسافة الصبر لـ 0.3%
+        const isImbalanceFlipped = obDynamics.imbalance < 0.6; // لازم السيولة تميل للبيع بوضوح
 
         if (isActuallyLosing && isImbalanceFlipped) {
-          return { exit: true, reason: "CONFIRMED_WALL_EVAPORATION" };
-        } else {
-          // إذا اختفى الجدار والسعر لا يزال فوق الدخول أو السيولة شرائية، "نصبر"
-          if (!trade.loggedWallWarning) {
-            console.log(
-              `⚠️ ${trade.symbol}: الحوت سحب طلبه، لكن السعر متماسك والسيولة جيدة. استمرار...`
-            );
-            trade.loggedWallWarning = true;
-          }
+          return { exit: true, reason: "CONFIRMED_SPOOFING_EXIT" };
         }
       }
     }
 
-    // 2. ملاحقة الربح خلف "جدران الدعم الحية"
+    // 2. 🐋 ملاحقة "جدران الدعم الحية" (الركوب مع الحيتان الجدد)
     if (
       obDynamics.strongWall &&
       obDynamics.strongWall.price > trade.currentStopLoss &&
-      obDynamics.strongWall.price < currentPrice * 0.998 // تأمين مسافة 0.2%
+      obDynamics.strongWall.price < currentPrice * 0.998
     ) {
       trade.currentStopLoss = obDynamics.strongWall.price * 0.9995;
-      console.log(
-        `🛡️ ${trade.symbol}: رفع الستوب خلف حوت جديد عند ${trade.currentStopLoss}`
-      );
+      console.log(`🛡️ ${trade.symbol}: رفعنا الستوب خلف حوت جديد دخل الساحة.`);
     }
 
-    // 3. الخروج بناءً على الستوب لوز (أهم نقطة حماية)
+    // 3. 🛑 الخروج بالستوب لوز (القفل النهائي)
     if (currentPrice <= trade.currentStopLoss) {
       return {
         exit: true,
         reason:
           trade.currentStopLoss > trade.entryPrice
-            ? "TRAILING_PROFIT_PROTECTION"
+            ? "TRAILED_PROFIT_TAKEN"
             : "STOP_LOSS_HIT",
       };
     }
 
-    // 4. استراتيجية "دع الأرباح تجري" (Let Profits Run)
+    // 4. 🚀 استراتيجية "الهدف المفتوح" (Let Profits Run)
     if (currentPrice >= trade.takeProfit) {
-      // إذا كانت السيولة لا تزال انفجارية، لا تخرج بل لاحق السعر
-      if (obDynamics.imbalance > 2.5) {
-        trade.currentStopLoss = currentPrice * 0.997; // ستوب لوز قريب جداً (تأمين الربح)
-        trade.takeProfit = currentPrice * 1.008; // رفع الهدف بنسبة إضافية
+      // لو الانفجار لسه شغال (Imbalance عالي جداً)، ارفع الهدف واحبس الربح
+      if (obDynamics.imbalance > 3.5) {
+        trade.currentStopLoss = currentPrice * 0.994; // احجز ربحك الحالي
+        trade.takeProfit = currentPrice * 1.012; // ارفع الهدف 1.2% إضافية
         console.log(
-          `🚀 ${trade.symbol}: سيولة جبارة (${obDynamics.imbalance.toFixed(
-            1
-          )}x)، تم ترحيل الهدف.`
+          `🚀 ${trade.symbol}: انفجار فوليوم! رحلنا الهدف للصيد الأكبر.`
         );
-      } else {
-        return { exit: true, reason: "TAKE_PROFIT_TARGET_REACHED" };
+        return { exit: false };
       }
+      return { exit: true, reason: "TAKE_PROFIT_REACHED" };
     }
 
-    // 5. فلتر "الخروج الذكي" عند ضعف الزخم
-    // تم تعديلها: لا يخرج إلا إذا حققنا ربحاً يغطي العمولات على الأقل
-    if (netProfit > 0.35 && obDynamics.imbalance < 0.25) {
-      return { exit: true, reason: "MOMENTUM_LOST_EXIT" };
+    // 5. 📉 فلتر ضعف الزخم (الخروج بكرامة)
+    // التعديل: مش هنخرج بضعف الزخم إلا لو محققين ربح صافي محترم يغطي العمولات ويفيض (0.6% صافي)
+    if (netProfit > 0.6 && obDynamics.imbalance < 0.2) {
+      return { exit: true, reason: "MOMENTUM_LOST_SECURED" };
     }
 
-    // 6. إدارة الوقت (Time-Based)
+    // 6. ⏳ إدارة الوقت (الخروج من الصفقات المملة)
     const tradeDurationMinutes = (Date.now() - trade.entryTime) / 60000;
     if (tradeDurationMinutes > CONFIG.MAX_MONITOR_TIME) {
-      if (netProfit < 0.1) {
-        return { exit: true, reason: "TIME_LIMIT_REACHED" };
+      // لو فات وقت طويل وإحنا لسه حول الدخول، اخرج وادور على فرصة أنشط
+      if (Math.abs(netProfit) < 0.2) {
+        return { exit: true, reason: "TIME_LIMIT_STAGNANT" };
       }
     }
 
