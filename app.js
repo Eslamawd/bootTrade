@@ -12,16 +12,14 @@ const CONFIG = {
     "ETH/USDT",
     "BNB/USDT",
     "XRP/USDT",
-    "ADA/USDT",
     "SOL/USDT",
     "DOGE/USDT",
-    "DOT/USDT",
     "LTC/USDT",
   ],
   MAX_CONCURRENT_TRADES: 3,
   MAX_SPREAD: 0.0012, // 0.12% أقصى سبريد مقبول
   UPDATE_INTERVAL: 5000, // أبطأ قليلاً لإعطاء فرصة لتحليل البيانات
-  MAX_MONITOR_TIME: 180, // ساعتين كحد أقصى
+  MAX_MONITOR_TIME: 120, // ساعتين كحد أقصى
   COOLDOWN_TIME: 600000, // 5 دقائق
 
   // إعدادات المؤشرات
@@ -253,7 +251,7 @@ class ProfessionalTradingSystem {
       const lastClose = closes[closes.length - 1]; // الإغلاق الأخير (الحالي)
       const prevClose = closes[closes.length - 2]; // الإغلاق الذي قبله
 
-      const candles48h = this.marketData[symbol].candles.slice(-199); // 96 شمعة (15د) تساوي 24 ساعة
+      const candles48h = this.marketData[symbol].candles.slice(-96); // 96 شمعة (15د) تساوي 24 ساعة
       const low24h = Math.min(...candles48h.map((c) => c[3])); // أقل سعر
       const high24h = Math.max(...candles48h.map((c) => c[2])); // أعلى سعر
 
@@ -304,7 +302,7 @@ class ProfessionalTradingSystem {
     const reasons = [];
     const warnings = [];
     const pricePosition = indicators.pricePosition;
-    if (pricePosition <= 25) {
+    if (pricePosition <= 20) {
       totalScore += 30; // مرحلة القاع
       reasons.push(
         `💎 السعر في أدنى 20% من نطاق الـ 24 ساعة (${pricePosition.toFixed(
@@ -328,9 +326,9 @@ class ProfessionalTradingSystem {
     const rsiSMA = indicators.rsiSMA20 || 50; // سنحتاج لإضافة rsiSMA في حساب المؤشرات
     const rsiDiff = indicators.rsi - rsiSMA;
 
-    if (rsiDiff < -10) {
+    if (rsiDiff < -6) {
       // الـ RSI الحالي أقل من المتوسط بـ 5 درجات (فرصة شراء)
-      totalScore += 25;
+      totalScore += 20;
       reasons.push(
         `📉 RSI دايناميك: تحت المتوسط بـ ${Math.abs(rsiDiff).toFixed(
           1
@@ -341,21 +339,29 @@ class ProfessionalTradingSystem {
       warnings.push("🚨 RSI دايناميك: تضخم سعري مقارنة بالمتوسط");
     }
 
-    // --- 3. Dynamic Volume (انفجار الفوليوم الحقيقي) ---
-    // بنقارن الفوليوم الحالي بـ 2x ATR للفوليوم أو Standard Deviation
+    /// --- 3. Smart Volume Explosion ---
     if (
-      indicators.volumeRatio > 2.0 &&
-      indicators.close > indicators.prevClose
+      indicators.volumeRatio > 2.2 &&
+      orderBook.bids[0][0] * orderBook.bids[0][1] >
+        indicators.avgVolume * indicators.close * 0.01
     ) {
-      totalScore += 20;
-      reasons.push(
-        `🔥 انفجار فوليوم غير مسبوق (${indicators.volumeRatio.toFixed(1)}x)`
-      );
-    } else if (
-      indicators.volumeRatio > 2.0 &&
-      indicators.close <= indicators.prevClose
-    ) {
-      totalScore += 20;
+      // فوليوم + اتجاه + RSI صحي
+      if (
+        indicators.close > indicators.prevClose &&
+        indicators.rsi > 35 &&
+        indicators.rsi < 60
+      ) {
+        totalScore += 22;
+        reasons.push(
+          `🔥 انفجار فوليوم ذكي (${indicators.volumeRatio.toFixed(1)}x)`
+        );
+      }
+
+      // فوليوم ضد الاتجاه → توزيع / تصريف
+      else if (indicators.close < indicators.prevClose && indicators.rsi > 55) {
+        totalScore -= 10;
+        reasons.push(`⚠️ فوليوم تصريفي محتمل`);
+      }
     }
 
     // --- 4. Whale Power (قوة الحيتان) ---
@@ -383,16 +389,9 @@ class ProfessionalTradingSystem {
       totalScore += 15;
       reasons.push("🌊 اتجاه صاعد مؤسسي (Price > SMA50 > SMA200)");
     }
-    const bestBid = orderBook.bids[0][0];
-    const bestAsk = orderBook.asks[0][0];
-    const spread = ((bestAsk - bestBid) / bestBid) * 100;
-    if (spread > 0.15) {
-      totalScore -= 10;
-      warnings.push(`⚠️ سبريد عالي (${spread.toFixed(2)}%)`);
-    }
 
-    // حساب الـ Confidence النهائي مع سقف 100
-    const confidence = Math.max(0, Math.min(100, totalScore));
+    // حساب الـ Confidence النهائي مع
+    const confidence = Math.min(100, Math.round(totalScore));
 
     return {
       confidence,
@@ -413,8 +412,10 @@ class ProfessionalTradingSystem {
 
     this.volumeHistory[symbol] = { avgVolume };
 
-    const dynamicThreshold =
-      avgVolume > 0 ? Math.max(20000, avgVolume * 0.005) : 50000;
+    const dynamicThreshold = Math.min(
+      Math.max(15000, avgVolume * 0.002),
+      200000
+    );
 
     let score = 0;
     const reasons = [];
@@ -598,9 +599,6 @@ class ProfessionalTradingSystem {
     /* ───────────────
      4️⃣ فلاتر صارمة
   ─────────────── */
-
-    if (indicators.rsi >= CONFIG.MAX_RSI_ENTRY) return null;
-    if (indicators.volumeRatio < CONFIG.MIN_VOLUME_RATIO) return null;
 
     const bestBid = orderBook.bids[0][0];
     const bestAsk = orderBook.asks[0][0];
@@ -908,7 +906,8 @@ class ProfessionalTradingSystem {
     if (currentProfit > 1.3) {
       // نستخدم معامل 2.0x ATR للملاحقة.
       // السعر الجديد للستوب = السعر الحالي - (2 * ATR)
-      const atrTrailingStopPrice = currentPrice - activeATR * 2.2;
+      const atrMultiplier = currentProfit > 2 ? 2.8 : 2.2;
+      const atrTrailingStopPrice = currentPrice - activeATR * atrMultiplier;
 
       // الحماية: نحدث الستوب لوز فقط إذا كان السعر الجديد "أعلى" من الحالي
       // (عشان الستوب يفضل يرفع لفوق وما ينزلش تحت أبداً)
@@ -936,7 +935,7 @@ class ProfessionalTradingSystem {
         : 0;
       const wallVolumeRatio = currentWallVolume / trade.initialWallVolume;
 
-      if (wallVolumeRatio < 0.1) {
+      if (wallVolumeRatio < 0.1 && Date.now() - trade.entryTime < 30000) {
         // التعديل: لو الحوت سحب طلبه بس السعر لسه أخضر والسيولة قوية، مش هنخرج
         const isActuallyLosing = currentPrice < trade.entryPrice * 0.997; // وسعنا مسافة الصبر لـ 0.3%
         const isImbalanceFlipped = obDynamics.imbalance < 0.6; // لازم السيولة تميل للبيع بوضوح
