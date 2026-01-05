@@ -17,7 +17,6 @@ const CONFIG = {
     "SHIB/USDT", // ≈ $0.00002
     "TRX/USDT", // ≈ $0.11
     "MATIC/USDT", // ≈ $0.70
-    ,
   ],
   MAX_CONCURRENT_TRADES: 3,
   MAX_SPREAD: 0.0012, // 0.12% أقصى سبريد مقبول
