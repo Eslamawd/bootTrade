@@ -391,7 +391,7 @@ class ProfessionalTradingSystem {
     }
 
     // حساب الـ Confidence النهائي مع
-    const confidence = Math.min(100, Math.round(totalScore));
+    const confidence = Math.max(0, Math.min(100, Math.round(totalScore)));
 
     return {
       confidence,
@@ -657,6 +657,7 @@ class ProfessionalTradingSystem {
       whaleAnalysis: decision.whaleAnalysis,
       targets,
       spread,
+      pricePosition,
       entryTime: Date.now(),
     };
   }
