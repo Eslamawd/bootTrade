@@ -9,12 +9,15 @@ require("dotenv").config();
 const CONFIG = {
   SYMBOLS: [
     "BTC/USDT",
-    "ETH/USDT",
     "BNB/USDT",
     "XRP/USDT",
     "SOL/USDT",
-    "DOGE/USDT",
     "LTC/USDT",
+    "DOGE/USDT", // ≈ $0.15
+    "SHIB/USDT", // ≈ $0.00002
+    "TRX/USDT", // ≈ $0.11
+    "MATIC/USDT", // ≈ $0.70
+    ,
   ],
   MAX_CONCURRENT_TRADES: 3,
   MAX_SPREAD: 0.0012, // 0.12% أقصى سبريد مقبول
