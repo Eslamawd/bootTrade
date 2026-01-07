@@ -29,7 +29,7 @@ const CONFIG = {
   TIMEFRAME: "15m",
 
   // إعدادات مصفوفة القرار
-  MIN_CONFIDENCE: 85,
+  MIN_CONFIDENCE: 79,
   MAX_RSI_ENTRY: 63,
   MIN_VOLUME_RATIO: 1.5,
 };
@@ -305,13 +305,20 @@ class ProfessionalTradingSystem {
     const warnings = [];
     const pricePosition = indicators.pricePosition;
     if (pricePosition <= 20) {
-      totalScore += 30; // مرحلة القاع
+      totalScore += 20; // مرحلة القاع
       reasons.push(
         `💎 السعر في أدنى 20% من نطاق الـ 24 ساعة (${pricePosition.toFixed(
           1
         )}%)`
       );
-    } else if (pricePosition >= 70) {
+    } else if (pricePosition <= 35) {
+      totalScore += 10;
+      reasons.push(
+        `💎 السعر في أدنى 35% من نطاق الـ 24 ساعة (${pricePosition.toFixed(
+          1
+        )}%)`
+      );
+    } else if (pricePosition >= 60) {
       totalScore -= 20; // مرحلة القمة
       warnings.push(
         `⚠️ السعر متضخم وقريب من أعلى سعر يومي (${pricePosition.toFixed(1)}%)`
@@ -328,7 +335,7 @@ class ProfessionalTradingSystem {
     const rsiSMA = indicators.rsiSMA20 || 50; // سنحتاج لإضافة rsiSMA في حساب المؤشرات
     const rsiDiff = indicators.rsi - rsiSMA;
 
-    if (rsiDiff < -6) {
+    if (rsiDiff < -6 && indicators.rsi > 30) {
       // الـ RSI الحالي أقل من المتوسط بـ 5 درجات (فرصة شراء)
       totalScore += 20;
       reasons.push(
@@ -367,12 +374,18 @@ class ProfessionalTradingSystem {
     }
 
     // --- 4. Whale Power (قوة الحيتان) ---
-    const whales = this.analyzeWhales(symbol, orderBook, indicators.avgVolume);
+    const whales = this.analyzeWhales(symbol, orderBook, indicators);
 
     totalScore += whales.score;
     reasons.push(...whales.reasons);
 
     // --- 5. Volatility Context (سياق التقلب) ---
+    const regime = this.detectMarketRegime(indicators);
+
+    if (regime === "RANGE") totalScore -= 10;
+    if (regime === "DOWNTREND") totalScore -= 15;
+    if (regime === "UPTREND") totalScore += 10;
+
     // لو الـ ATR عالي جداً مقارنة بالسعر، ده معناه Risk عالي
     const volatilityPct = (indicators.atr / indicators.close) * 100;
     if (volatilityPct > 3) {
@@ -406,7 +419,8 @@ class ProfessionalTradingSystem {
     };
   }
 
-  analyzeWhales(symbol, orderBook, avgVolume = 0) {
+  analyzeWhales(symbol, orderBook, indicators) {
+    const avgVolume = indicators.avgVolume;
     if (!orderBook || !orderBook.bids)
       return { score: 0, reasons: [], warnings: [], whales: [] };
 
@@ -415,8 +429,8 @@ class ProfessionalTradingSystem {
     this.volumeHistory[symbol] = { avgVolume };
 
     const dynamicThreshold = Math.min(
-      Math.max(15000, avgVolume * 0.002),
-      200000
+      Math.max(indicators.close * avgVolume * 0.001, 20000),
+      indicators.close * avgVolume * 0.02
     );
 
     let score = 0;
@@ -436,7 +450,7 @@ class ProfessionalTradingSystem {
     }
 
     if (whales.length >= 10) {
-      score += 25;
+      score += 20;
       reasons.push(`🐋🐋🐋 ${whales.length} حيتان نشطة`);
     } else if (whales.length > 0) {
       score += 2.5 * whales.length;
@@ -446,7 +460,7 @@ class ProfessionalTradingSystem {
     // هؤلاء هم الحيتان الذين سيتنفذ أمرهم فوراً إذا نزل السعر قليلاً
     const frontLineWhales = whales.filter((w) => w.position <= 3).length;
     if (frontLineWhales >= 1) {
-      score += 10;
+      score += 5;
       reasons.push("🛡️ حوت هجومي في الخط الأول (دعم مباشر)");
     }
     this.dbManager
@@ -464,6 +478,18 @@ class ProfessionalTradingSystem {
       .catch(() => {});
 
     return { score, reasons, warnings, whales, dynamicThreshold };
+  }
+
+  detectMarketRegime(ind) {
+    const volatility = ind.atr / ind.close;
+    const trendStrength = Math.abs(ind.sma50 - ind.sma200) / ind.close;
+
+    if (volatility > 0.035) return "HIGH_VOLATILITY";
+    if (trendStrength < 0.004) return "RANGE";
+    if (ind.close > ind.sma50 && ind.sma50 > ind.sma200) return "UPTREND";
+    if (ind.close < ind.sma50 && ind.sma50 < ind.sma200) return "DOWNTREND";
+
+    return "TRANSITION";
   }
 
   analyzeOrderBookDynamics(symbol, orderBook) {
@@ -750,7 +776,12 @@ class ProfessionalTradingSystem {
       }
 
       // 2. معادلة حجم الصفقة الذكية (تم تحسينها)
-      const baseRisk = 0.1;
+      const baseRisk =
+        opportunity.confidence > 92
+          ? 0.03
+          : opportunity.confidence > 85
+          ? 0.02
+          : 0.015;
       const confidenceFactor = opportunity.confidence / 100;
       const whaleFactor = Math.min(
         2.0,
@@ -843,7 +874,7 @@ class ProfessionalTradingSystem {
       const currentIndicators = await this.calculateTechnicalIndicators(
         trade.symbol
       );
-      const activeATR = currentIndicators ? currentIndicators.atr : trade.atr;
+      const activeATR = trade.atr * 0.7 + currentIndicators.atr * 0.3;
 
       // 3. التريلينج ستوب المطور المعتمد على ATR
       this.updateTrailingStop(trade, currentPrice, currentProfit, activeATR);
