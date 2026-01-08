@@ -21,7 +21,7 @@ const CONFIG = {
   MAX_CONCURRENT_TRADES: 3,
   MAX_SPREAD: 0.0012, // 0.12% أقصى سبريد مقبول
   UPDATE_INTERVAL: 5000, // أبطأ قليلاً لإعطاء فرصة لتحليل البيانات
-  MAX_MONITOR_TIME: 120, // ساعتين كحد أقصى
+  MAX_MONITOR_TIME: 120 * 60, // ساعتين كحد أقصى
   COOLDOWN_TIME: 600000, // 5 دقائق
 
   // إعدادات المؤشرات
@@ -42,6 +42,7 @@ class ProfessionalTradingSystem {
       enableRateLimit: true,
     });
 
+    this.fees = {};
     // إدارة قاعدة البيانات
     this.dbManager = new DatabaseManager();
 
@@ -258,8 +259,8 @@ class ProfessionalTradingSystem {
       const high24h = Math.max(...candles48h.map((c) => c[2])); // أعلى سعر
 
       const currentPrice = candles[candles.length - 1][4];
-      const pricePosition =
-        ((currentPrice - low24h) / (high24h - low24h)) * 100;
+      const range = high24h - low24h || 1;
+      const pricePosition = ((currentPrice - low24h) / range) * 100;
 
       await this.dbManager.saveTechnicalIndicators(symbol, {
         rsi: currentRSI,
@@ -335,7 +336,7 @@ class ProfessionalTradingSystem {
     const rsiSMA = indicators.rsiSMA20 || 50; // سنحتاج لإضافة rsiSMA في حساب المؤشرات
     const rsiDiff = indicators.rsi - rsiSMA;
 
-    if (rsiDiff < -6 && indicators.rsi > 30) {
+    if (indicators.rsi < 40 && rsiDiff < -5) {
       // الـ RSI الحالي أقل من المتوسط بـ 5 درجات (فرصة شراء)
       totalScore += 20;
       reasons.push(
@@ -417,6 +418,18 @@ class ProfessionalTradingSystem {
       volatility: volatilityPct,
       pricePosition,
     };
+  }
+
+  checkPriceStability(symbol, supportPrice) {
+    const candles = this.marketData[symbol]?.candles;
+    if (!candles || candles.length < 3) return false;
+
+    // آخر شمعتين مكتملتين
+    const last2 = candles.slice(-3, -1);
+
+    return last2.every(
+      (c) => c[3] >= supportPrice * 0.998 // الذيل ماكسرش الدعم
+    );
   }
 
   analyzeWhales(symbol, orderBook, indicators) {
@@ -509,11 +522,11 @@ class ProfessionalTradingSystem {
     let score = 0;
     const reasons = [];
 
-    if (imbalance > 2.5) {
-      score += 25;
+    if (imbalance > 2.5 && imbalance <= 8) {
+      score += 20;
       reasons.push(`🌊 سيولة شراء (Imbalance: ${imbalance.toFixed(1)}x)`);
-    } else if (imbalance < 0.5) {
-      score -= 30;
+    } else if (imbalance > 8) {
+      score += 5;
     }
 
     // 2. تحديد عتبة الجدار الديناميكية
@@ -615,11 +628,23 @@ class ProfessionalTradingSystem {
     const obAnalysis = this.analyzeOrderBookDynamics(symbol, orderBook);
     if (!obAnalysis) return null;
 
+    // ✅ فلتر الثبات الزمني (خلف أقوى جدار)
+    if (obAnalysis?.strongWall?.price) {
+      const stable = this.checkPriceStability(
+        symbol,
+        obAnalysis.strongWall.price
+      );
+      if (!stable) return null;
+    }
+
     /* ───────────────
      3️⃣ Decision Matrix
   ─────────────── */
 
     const decision = await this.calculateDecisionMatrix(symbol, orderBook);
+
+    // ✅ فلتر الثبات الزمني
+
     if (!decision || decision.confidence < CONFIG.MIN_CONFIDENCE) return null;
 
     const indicators = decision.indicators;
@@ -664,7 +689,7 @@ class ProfessionalTradingSystem {
       pricePosition
     );
 
-    if (!targets || targets.riskRewardRatio < 0.8) return null;
+    if (!targets || targets.riskRewardRatio < 1.3) return null;
 
     /* ───────────────
      7️⃣ OK → Entry Signal
@@ -726,9 +751,9 @@ class ProfessionalTradingSystem {
     // 5. حساب الهدف (Take Profit)
     // بنخلي الهدف دائماً 1.8 إلى 2.0 ضعف المخاطرة (Risk/Reward)
     const riskAmount = entryPrice - stopLoss;
-    let takeProfit = entryPrice + riskAmount * 2.5;
+    let takeProfit = entryPrice + riskAmount * 1.9;
     pricePosition = pricePosition || 50;
-    if (pricePosition <= 25) {
+    if (pricePosition <= 15) {
       // إذا كان السعر في القاع، نزيد الهدف
       takeProfit = entryPrice + riskAmount * 2.5; // 2.5 بدلاً من 2.0
     }
@@ -865,6 +890,7 @@ class ProfessionalTradingSystem {
 
       const currentProfit =
         ((currentPrice - trade.entryPrice) / trade.entryPrice) * 100;
+
       const feePercent = (this.fees[trade.symbol]?.taker || 0.001) * 2 * 100;
       // 2 لأنه شراء + بيع، *100 لتحويل النسبة
 
@@ -874,6 +900,12 @@ class ProfessionalTradingSystem {
       const currentIndicators = await this.calculateTechnicalIndicators(
         trade.symbol
       );
+
+      if (!currentIndicators || !currentIndicators.atr) {
+        setTimeout(monitor, 2000);
+        return;
+      }
+
       const activeATR = trade.atr * 0.7 + currentIndicators.atr * 0.3;
 
       // 3. التريلينج ستوب المطور المعتمد على ATR
