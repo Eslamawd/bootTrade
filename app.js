@@ -8,17 +8,13 @@ require("dotenv").config();
 
 const CONFIG = {
   SYMBOLS: [
-    "BTC/USDT",
-    "BNB/USDT",
-    "XRP/USDT",
-    "SOL/USDT",
-    "LTC/USDT",
-    "DOGE/USDT", // ≈ $0.15
-    "SHIB/USDT", // ≈ $0.00002
-    "TRX/USDT", // ≈ $0.11
-    "MATIC/USDT", // ≈ $0.70
+    "BTC/USDT", // الرئيسي - أعلى سيولة
+    "BNB/USDT", // منصة Binance - عالية السيولة
+    "SOL/USDT", // سريع الحركة - فرص جيدة
+    "XRP/USDT", // متقلب مع حجم جيد
+    "MATIC/USDT", // جيد للمضاربة قصيرة المدى
   ],
-  MAX_CONCURRENT_TRADES: 3,
+  MAX_CONCURRENT_TRADES: 5,
   MAX_SPREAD: 0.0012, // 0.12% أقصى سبريد مقبول
   UPDATE_INTERVAL: 5000, // أبطأ قليلاً لإعطاء فرصة لتحليل البيانات
   MAX_MONITOR_TIME: 120 * 60, // ساعتين كحد أقصى
@@ -29,9 +25,9 @@ const CONFIG = {
   TIMEFRAME: "15m",
 
   // إعدادات مصفوفة القرار
-  MIN_CONFIDENCE: 79,
-  MAX_RSI_ENTRY: 63,
-  MIN_VOLUME_RATIO: 1.5,
+  MIN_CONFIDENCE: 85,
+  MAX_RSI_ENTRY: 60,
+  MIN_VOLUME_RATIO: 1.8,
 };
 
 class ProfessionalTradingSystem {
@@ -305,21 +301,21 @@ class ProfessionalTradingSystem {
     const reasons = [];
     const warnings = [];
     const pricePosition = indicators.pricePosition;
-    if (pricePosition <= 20) {
-      totalScore += 20; // مرحلة القاع
+    if (pricePosition <= 15) {
+      totalScore += 15; // مرحلة القاع
       reasons.push(
-        `💎 السعر في أدنى 20% من نطاق الـ 24 ساعة (${pricePosition.toFixed(
+        `💎 السعر في أدنى 15% من نطاق الـ 24 ساعة (${pricePosition.toFixed(
           1
         )}%)`
       );
-    } else if (pricePosition <= 35) {
+    } else if (pricePosition <= 25) {
       totalScore += 10;
       reasons.push(
-        `💎 السعر في أدنى 35% من نطاق الـ 24 ساعة (${pricePosition.toFixed(
+        `💎 السعر في أدنى 25% من نطاق الـ 24 ساعة (${pricePosition.toFixed(
           1
         )}%)`
       );
-    } else if (pricePosition >= 60) {
+    } else if (pricePosition >= 50) {
       totalScore -= 20; // مرحلة القمة
       warnings.push(
         `⚠️ السعر متضخم وقريب من أعلى سعر يومي (${pricePosition.toFixed(1)}%)`
@@ -647,6 +643,7 @@ class ProfessionalTradingSystem {
 
     if (!decision || decision.confidence < CONFIG.MIN_CONFIDENCE) return null;
 
+    const pricePosition = decision.pricePosition || 50;
     const indicators = decision.indicators;
 
     /* ───────────────
@@ -659,7 +656,6 @@ class ProfessionalTradingSystem {
 
     if (spread > CONFIG.MAX_SPREAD) return null;
 
-    const pricePosition = decision.pricePosition;
     /* ───────────────
      5️⃣ تنبيه سوبر حوت
   ─────────────── */
@@ -714,7 +710,6 @@ class ProfessionalTradingSystem {
       entryTime: Date.now(),
     };
   }
-
   calculateDynamicTargets(
     entryPrice,
     indicators,
@@ -722,58 +717,70 @@ class ProfessionalTradingSystem {
     obAnalysis,
     pricePosition
   ) {
-    // 1. حساب الـ ATR الأساسي (أو 0.8% كقيمة افتراضية)
+    // 1. حساب الـ ATR الأساسي
     const atr = indicators.atr || entryPrice * 0.008;
 
     // 2. معامل المسافة بناءً على الثقة
-    // لو الثقة عالية بنخلي الستوب أضيق (2.2)، لو متوسطة بنوسعه (2.8) عشان نتفادى التذبذب
     const multiplier = confidence > 85 ? 2.5 : 3.0;
     let stopLoss = entryPrice - atr * multiplier;
 
-    // 3. 🛡️ ميزة "الدرع": الاحتماء خلف تكتل السيولة (Cluster Protection)
-    // لو obAnalysis لقى تكتل جدران قوي تحت سعر الدخول، بنحط الستوب وراه
+    // 3. حماية تكتل السيولة
     if (obAnalysis?.strongWall && obAnalysis.strongWall.price < entryPrice) {
-      // نضع الستوب تحت سعر التكتل بـ 0.15% (منطقة أمان من الذيول)
       const wallSafePrice = obAnalysis.strongWall.price * 0.9975;
-
-      // نختار الستوب الأبعد (الأقل سعراً) لضمان أقصى حماية
       stopLoss = Math.min(stopLoss, wallSafePrice);
     }
 
-    // 4. صمامات الأمان المئوية (Limits)
-    const minSLPrice = entryPrice * 0.988; // حد أدنى 0.8% (عشان الستوب ميبقاش لازق في السعر)
-    const maxSLPrice = entryPrice * 0.977; // حد أقصى 2.5% (عشان الخسارة متبقاش كارثية)
+    // 4. حدود الستوب لوز - الإصلاح هنا
+    const minSLPrice = entryPrice * 0.988; // حد أدنى (أعلى سعر)
+    const maxSLPrice = entryPrice * 0.977; // حد أقصى (أقل سعر)
 
-    // تطبيق الحدود
-    if (stopLoss > minSLPrice) stopLoss = minSLPrice;
-    if (stopLoss < maxSLPrice) stopLoss = maxSLPrice;
+    // التصحيح: stopLoss يجب أن يكون بين maxSLPrice (الأقل) و minSLPrice (الأعلى)
+    stopLoss = Math.max(stopLoss, maxSLPrice); // لا يقل عن الحد الأدنى
+    stopLoss = Math.min(stopLoss, minSLPrice); // لا يزيد عن الحد الأعلى
 
-    // 5. حساب الهدف (Take Profit)
-    // بنخلي الهدف دائماً 1.8 إلى 2.0 ضعف المخاطرة (Risk/Reward)
+    // 5. حساب الهدف
     const riskAmount = entryPrice - stopLoss;
     let takeProfit = entryPrice + riskAmount * 1.9;
-    pricePosition = pricePosition || 50;
-    if (pricePosition <= 15) {
-      // إذا كان السعر في القاع، نزيد الهدف
-      takeProfit = entryPrice + riskAmount * 2.5; // 2.5 بدلاً من 2.0
-    }
-    // تأكد أن الهدف لا يقل عن 1.5% (عشان نغطي العمولات ونطلع بربح صافي)
-    const minTPPrice = entryPrice * 1.018;
-    if (takeProfit < minTPPrice) takeProfit = minTPPrice;
 
-    // 6. الحسابات النهائية للـ Return
+    const pos = pricePosition || 50;
+    if (pos <= 15) {
+      takeProfit = entryPrice + riskAmount * 2.5;
+    }
+
+    // 6. حدود الهدف
+    const minTPPrice = entryPrice * 1.018;
+    takeProfit = Math.max(takeProfit, minTPPrice);
+
+    // 7. حساب نسبة المخاطرة/العائد
     const riskRewardRatio = (takeProfit - entryPrice) / (entryPrice - stopLoss);
+
+    // 8. فحص النتائج
+    if (stopLoss >= entryPrice) {
+      console.error("❌ خطأ: stopLoss >= entryPrice");
+      return null;
+    }
+
+    if (takeProfit <= entryPrice) {
+      console.error("❌ خطأ: takeProfit <= entryPrice");
+      return null;
+    }
+
+    if (riskRewardRatio < 1.2) {
+      console.warn(`⚠️ نسبة R/R منخفضة: ${riskRewardRatio.toFixed(2)}`);
+    }
 
     return {
       stopLoss: Number(stopLoss.toFixed(8)),
       takeProfit: Number(takeProfit.toFixed(8)),
-      riskRewardRatio,
+      riskRewardRatio: Number(riskRewardRatio.toFixed(2)),
       atrValue: atr,
       wallProtected: !!(
         obAnalysis?.strongWall && stopLoss <= obAnalysis.strongWall.price
       ),
       stopLossPercent:
         (((entryPrice - stopLoss) / entryPrice) * 100).toFixed(2) + "%",
+      takeProfitPercent:
+        (((takeProfit - entryPrice) / entryPrice) * 100).toFixed(2) + "%",
     };
   }
 
@@ -790,42 +797,147 @@ class ProfessionalTradingSystem {
       return 0;
     }
   }
+
   async executeTrade(opportunity) {
     try {
+      // 1. جلب الرصيد الفعلي مع التعامل مع الأخطاء
       const myBalance = await this.getMyActualBalance();
 
-      // 1. فحص رصيد الأمان
-      if (myBalance < 15) {
-        console.log("⚠️ الرصيد الحالي منخفض جداً لفتح صفقة جديدة");
+      if (myBalance <= 0) {
+        console.log("⚠️ الرصيد غير متاح أو صفر");
         return;
       }
 
-      // 2. معادلة حجم الصفقة الذكية (تم تحسينها)
-      const baseRisk =
+      // 2. فحص رصيد الأمان - تحسين الحد الأدنى
+      const minRequiredBalance = 50; // زيادة الحد الأدنى لأمان أكثر
+      if (myBalance < minRequiredBalance) {
+        console.log(
+          `⚠️ الرصيد الحالي ($${myBalance.toFixed(2)}) منخفض جداً للدخول`
+        );
+        return;
+      }
+
+      // 3. حساب المخاطرة المالية بناءً على المسافة بين الدخول والستوب
+      const riskPerTradePercent = 1.5; // 1.5% من الرصيد كحد أقصى للخسارة لكل صفقة
+
+      // حساب نسبة الخسارة المحتملة من سعر الدخول إلى الستوب
+      const priceRiskPercent =
+        ((opportunity.entryPrice - opportunity.stopLoss) /
+          opportunity.entryPrice) *
+        100;
+
+      // الحجم الأمثل بناءً على نسبة المخاطرة المسموحة
+      const maxRiskAmount = myBalance * (riskPerTradePercent / 100);
+      const positionSizeBasedOnRisk = maxRiskAmount / (priceRiskPercent / 100);
+
+      // 4. معادلة حجم الصفقة الذكية مع تعديلات
+      const baseRiskMultiplier =
         opportunity.confidence > 92
-          ? 0.03
+          ? 0.03 // 3%
           : opportunity.confidence > 85
-          ? 0.02
-          : 0.015;
-      const confidenceFactor = opportunity.confidence / 100;
-      const whaleFactor = Math.min(
-        2.0,
-        1 + (opportunity.whaleAnalysis.whales?.length || 0) * 0.2
+          ? 0.02 // 2%
+          : 0.015; // 1.5%
+
+      // وزن الثقة بشكل أكثر توازناً
+      const confidenceWeight = Math.min(1.5, opportunity.confidence / 100);
+
+      // وزن الحيتان (عدد الحيتان يؤثر إيجابياً ولكن ليس بشكل مبالغ)
+      const whaleCount = opportunity.whaleAnalysis.whales?.length || 0;
+      const whaleWeight = Math.min(1.3, 1 + whaleCount * 0.1);
+
+      // وزن الانحراف (Imbalance) - إذا كان عالي جداً نزيد الحجم
+      const imbalance = opportunity.imbalanceAtEntry || 1;
+      const imbalanceWeight = Math.min(1.5, 1 + (imbalance - 1) * 0.2);
+
+      // 5. حساب الحجم النهائي
+      let tradeSize =
+        myBalance *
+        baseRiskMultiplier *
+        confidenceWeight *
+        whaleWeight *
+        imbalanceWeight;
+
+      // 6. تطبيق حدود الأمان - أهم خطوة!
+
+      // أ) الحد الأدنى: 15 دولار أو 5% من الرصيد أيهما أقل
+      const minSize1 = 15;
+      const minSize2 = myBalance * 0.05;
+      const minTradeSize = Math.max(minSize1, minSize2);
+
+      // ب) الحد الأقصى: 25% من الرصيد أو الحجم بناءً على المخاطرة أيهما أقل
+      const maxSize1 = myBalance * 0.25;
+      const maxSize2 = positionSizeBasedOnRisk;
+      const maxTradeSize = Math.min(maxSize1, maxSize2);
+
+      // ج) تأكد أن الحجم لا يتجاوز 1000 دولار كحد مطلق (للحماية)
+      const absoluteMax = 1000;
+
+      // د) التطبيق الفعلي للحدود
+      tradeSize = Math.max(tradeSize, minTradeSize); // لا يقل عن الحد الأدنى
+      tradeSize = Math.min(tradeSize, maxTradeSize); // لا يزيد عن الحد الأقصى
+      tradeSize = Math.min(tradeSize, absoluteMax); // الحد المطلق
+
+      // هـ) إذا كان الحجم أكبر من الرصيد المتاح، استخدم 80% من الرصيد
+      if (tradeSize > myBalance * 0.9) {
+        tradeSize = myBalance * 0.8;
+        console.log(`⚠️ ضبط الحجم لـ 80% من الرصيد للحماية`);
+      }
+
+      // 7. حساب المخاطرة الفعلية للصفقة
+      const riskAmount = tradeSize * (priceRiskPercent / 100);
+      const riskToBalancePercent = (riskAmount / myBalance) * 100;
+
+      // 8. التحقق النهائي من المخاطر
+      if (riskToBalancePercent > 3) {
+        console.log(
+          `⛔ مخاطرة عالية جداً (${riskToBalancePercent.toFixed(
+            2
+          )}%) - إلغاء الصفقة`
+        );
+        this.sendTelegram(
+          `⛔ *مخاطرة عالية*: ${
+            opportunity.symbol
+          } - ${riskToBalancePercent.toFixed(2)}%`
+        );
+        return;
+      }
+
+      // 9. تسجيل بيانات الحسابات للتحقق
+      console.log(`📊 حساب حجم الصفقة لـ ${opportunity.symbol}:`);
+      console.log(`   - الرصيد: $${myBalance.toFixed(2)}`);
+      console.log(
+        `   - نسبة المخاطرة السعرية: ${priceRiskPercent.toFixed(2)}%`
+      );
+      console.log(
+        `   - الثقة: ${
+          opportunity.confidence
+        }% → وزن: ${confidenceWeight.toFixed(2)}`
+      );
+      console.log(
+        `   - عدد الحيتان: ${whaleCount} → وزن: ${whaleWeight.toFixed(2)}`
+      );
+      console.log(
+        `   - الانحراف: ${imbalance.toFixed(
+          2
+        )}x → وزن: ${imbalanceWeight.toFixed(2)}`
+      );
+      console.log(`   - الحجم المحسوب: $${tradeSize.toFixed(2)}`);
+      console.log(
+        `   - المخاطرة الفعلية: $${riskAmount.toFixed(
+          2
+        )} (${riskToBalancePercent.toFixed(2)}% من الرصيد)`
       );
 
-      let tradeSize = myBalance * baseRisk * confidenceFactor * whaleFactor;
-
-      // حماية الرصيد وتوزيعه
-      tradeSize = Math.min(tradeSize, myBalance / 2);
-      tradeSize = Math.max(tradeSize, 11);
-
+      // 10. إنشاء كائن الصفقة
       const trade = {
         id: `TRADE_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
         symbol: opportunity.symbol,
         entryPrice: opportunity.entryPrice,
-        // ✅ إصلاح: استخدم Date.now() مباشرة لضمان عدم ظهور NaN في الحسابات
         entryTime: Date.now(),
         size: tradeSize,
+        riskAmount: riskAmount,
+        riskPercent: priceRiskPercent,
+        riskToBalancePercent: riskToBalancePercent,
         wallPrice: opportunity.wallPrice,
         initialWallVolume: opportunity.initialWallVolume,
         imbalanceAtEntry: opportunity.imbalanceAtEntry,
@@ -840,39 +952,84 @@ class ProfessionalTradingSystem {
         highestPrice: opportunity.entryPrice,
         currentStopLoss: opportunity.stopLoss,
         stopLossHistory: [
-          { price: opportunity.stopLoss, time: Date.now(), reason: "Initial" },
+          {
+            price: opportunity.stopLoss,
+            time: Date.now(),
+            reason: "Initial",
+            riskPercent: priceRiskPercent,
+          },
         ],
         pricePosition: opportunity.pricePosition,
+        whaleCount: whaleCount,
+        calculationDetails: {
+          balance: myBalance,
+          confidenceWeight: confidenceWeight,
+          whaleWeight: whaleWeight,
+          imbalanceWeight: imbalanceWeight,
+          positionSizingMethod: "Intelligent Risk-Based",
+        },
       };
 
-      // 3. منع الازدواجية
+      // 11. منع الازدواجية
       const isAlreadyOpen = this.activeTrades.find(
         (t) => t.symbol === trade.symbol
       );
-      if (isAlreadyOpen) return;
+      if (isAlreadyOpen) {
+        console.log(`⏸️ ${trade.symbol}: صفقة نشطة بالفعل`);
+        return;
+      }
 
+      // 12. التحقق من الحد الأقصى للصفقات المتزامنة
+      if (this.activeTrades.length >= CONFIG.MAX_CONCURRENT_TRADES) {
+        console.log(
+          `⏸️ وصلت للحد الأقصى للصفقات (${CONFIG.MAX_CONCURRENT_TRADES})`
+        );
+        return;
+      }
+
+      // 13. إضافة الصفقة
       this.activeTrades.push(trade);
 
-      // 4. إرسال التقرير
-      const whaleCount = opportunity.whaleAnalysis.whales?.length || 0;
+      // 14. إرسال التقرير المفصل
       const whaleIcons = "🐋".repeat(Math.min(whaleCount, 3));
+      const riskRewardRatio = (
+        (opportunity.takeProfit - opportunity.entryPrice) /
+        (opportunity.entryPrice - opportunity.stopLoss)
+      ).toFixed(2);
 
       this.sendTelegram(
         `🚀 *دخول جديد: ${trade.symbol}* [15M]\n\n` +
-          `💵 الحجم: $${trade.size.toFixed(2)}\n` +
-          `💰 السعر: $${trade.entryPrice.toFixed(4)}\n` +
-          `🛡️ الستوب: $${trade.stopLoss.toFixed(4)}\n` +
-          `🎯 الهدف: $${trade.takeProfit.toFixed(4)}\n` +
-          `📝 *السبب:* ${trade.reasons}\n` +
-          `🔮 الثقة: ${trade.confidence}% ${whaleIcons}\n`
+          `💵 *الحجم:* $${tradeSize.toFixed(2)}\n` +
+          `💰 *السعر:* $${opportunity.entryPrice.toFixed(4)}\n` +
+          `🛡️ *الستوب:* $${opportunity.stopLoss.toFixed(
+            4
+          )} (${priceRiskPercent.toFixed(2)}%)\n` +
+          `🎯 *الهدف:* $${opportunity.takeProfit.toFixed(4)}\n` +
+          `⚖️ *R/R:* ${riskRewardRatio}:1\n` +
+          `⚠️ *المخاطرة:* $${riskAmount.toFixed(
+            2
+          )} (${riskToBalancePercent.toFixed(2)}% من الرصيد)\n` +
+          `📊 *الرصيد:* $${myBalance.toFixed(2)}\n` +
+          `🔮 *الثقة:* ${opportunity.confidence}% ${whaleIcons}\n` +
+          `📈 *RSI:* ${opportunity.indicators.rsi.toFixed(1)}\n` +
+          `💧 *الحجم:* ${opportunity.indicators.volumeRatio.toFixed(1)}x\n` +
+          `📝 *الأسباب:*\n${opportunity.reasons
+            .slice(0, 3)
+            .map((r) => `• ${r}`)
+            .join("\n")}`
       );
 
+      // 15. بدء المراقبة
       this.startProfessionalMonitoring(trade);
+
+      console.log(
+        `✅ تم تنفيذ صفقة ${trade.symbol} بحجم $${tradeSize.toFixed(2)}`
+      );
     } catch (error) {
       console.error("❌ خطأ تنفيذ:", error);
+      this.sendTelegram(`❌ *خطأ في تنفيذ الصفقة:* ${error.message}`);
     }
   }
-
   // ==================== المراقبة الاحترافية ====================
   startProfessionalMonitoring(trade) {
     const monitor = async () => {
@@ -1347,12 +1504,12 @@ class ProfessionalTradingSystem {
             } دقيقة`
         );
       }
-    }, 3600000);
+    }, 2 * 3600000);
     // إرسال تقرير المراقبة كل ساعة (3600000 مللي ثانية)
 
     setInterval(() => {
       this.sendMonitoringReport();
-    }, 3600000);
+    }, 3 * 3600000);
     // استدعاء أول مرة فور تشغيل البوت
     this.sendMonitoringReport();
 
