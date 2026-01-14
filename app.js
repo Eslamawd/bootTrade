@@ -25,7 +25,7 @@ const CONFIG = {
   TIMEFRAME: "15m",
 
   // إعدادات مصفوفة القرار
-  MIN_CONFIDENCE: 85,
+  MIN_CONFIDENCE: 83,
   MAX_RSI_ENTRY: 60,
   MIN_VOLUME_RATIO: 1.8,
 };
@@ -301,21 +301,21 @@ class ProfessionalTradingSystem {
     const reasons = [];
     const warnings = [];
     const pricePosition = indicators.pricePosition;
-    if (pricePosition <= 15) {
+    if (pricePosition <= 25) {
       totalScore += 15; // مرحلة القاع
-      reasons.push(
-        `💎 السعر في أدنى 15% من نطاق الـ 24 ساعة (${pricePosition.toFixed(
-          1
-        )}%)`
-      );
-    } else if (pricePosition <= 25) {
-      totalScore += 10;
       reasons.push(
         `💎 السعر في أدنى 25% من نطاق الـ 24 ساعة (${pricePosition.toFixed(
           1
         )}%)`
       );
-    } else if (pricePosition >= 50) {
+    } else if (pricePosition <= 60) {
+      totalScore += 10;
+      reasons.push(
+        `💎 السعر في أدنى 60% من نطاق الـ 24 ساعة (${pricePosition.toFixed(
+          1
+        )}%)`
+      );
+    } else if (pricePosition >= 70) {
       totalScore -= 20; // مرحلة القمة
       warnings.push(
         `⚠️ السعر متضخم وقريب من أعلى سعر يومي (${pricePosition.toFixed(1)}%)`
@@ -833,9 +833,9 @@ class ProfessionalTradingSystem {
       // 4. معادلة حجم الصفقة الذكية مع تعديلات
       const baseRiskMultiplier =
         opportunity.confidence > 92
-          ? 0.03 // 3%
+          ? 0.5 // 50%
           : opportunity.confidence > 85
-          ? 0.02 // 2%
+          ? 0.2 // 2%
           : 0.015; // 1.5%
 
       // وزن الثقة بشكل أكثر توازناً
@@ -860,12 +860,12 @@ class ProfessionalTradingSystem {
       // 6. تطبيق حدود الأمان - أهم خطوة!
 
       // أ) الحد الأدنى: 15 دولار أو 5% من الرصيد أيهما أقل
-      const minSize1 = 15;
-      const minSize2 = myBalance * 0.05;
+      const minSize1 = 100;
+      const minSize2 = myBalance * 0.15;
       const minTradeSize = Math.max(minSize1, minSize2);
 
       // ب) الحد الأقصى: 25% من الرصيد أو الحجم بناءً على المخاطرة أيهما أقل
-      const maxSize1 = myBalance * 0.25;
+      const maxSize1 = myBalance * 0.5;
       const maxSize2 = positionSizeBasedOnRisk;
       const maxTradeSize = Math.min(maxSize1, maxSize2);
 
@@ -1124,9 +1124,22 @@ class ProfessionalTradingSystem {
       });
     }
 
+    // أضف هذا الشرط بين الخطوة 1 والخطوة 2
+    if (
+      currentProfit > 1.3 &&
+      trade.currentStopLoss < trade.entryPrice * 1.01
+    ) {
+      trade.currentStopLoss = trade.entryPrice * 1.008; // احجز ربح 0.8% فوراً
+      trade.stopLossHistory.push({
+        price: trade.currentStopLoss,
+        time: Date.now(),
+        reason: "Partial Profit Secure",
+      });
+    }
+
     // 2. تفعيل التريلينج المعتمد على ATR
     // سنبدأ في ملاحقة السعر بعد تحقيق ربح بسيط (مثلاً 0.4%)
-    if (currentProfit > 1.3) {
+    if (currentProfit > 1.7) {
       // نستخدم معامل 2.0x ATR للملاحقة.
       // السعر الجديد للستوب = السعر الحالي - (2 * ATR)
       const atrMultiplier = currentProfit > 2 ? 2.8 : 2.2;
