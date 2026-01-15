@@ -27,7 +27,7 @@ const CONFIG = {
   // إعدادات مصفوفة القرار
   MIN_CONFIDENCE: 83,
   MAX_RSI_ENTRY: 60,
-  MIN_VOLUME_RATIO: 1.8,
+  MIN_VOLUME_RATIO: 1.9,
 };
 
 class ProfessionalTradingSystem {
@@ -257,6 +257,7 @@ class ProfessionalTradingSystem {
       const currentPrice = candles[candles.length - 1][4];
       const range = high24h - low24h || 1;
       const pricePosition = ((currentPrice - low24h) / range) * 100;
+      
 
       await this.dbManager.saveTechnicalIndicators(symbol, {
         rsi: currentRSI,
@@ -301,15 +302,16 @@ class ProfessionalTradingSystem {
     const reasons = [];
     const warnings = [];
     const pricePosition = indicators.pricePosition;
-    if (pricePosition <= 25) {
+
+    if (pricePosition <= 15) {
       totalScore += 15; // مرحلة القاع
       reasons.push(
-        `💎 السعر في أدنى 25% من نطاق الـ 24 ساعة (${pricePosition.toFixed(
+        `💎 السعر في أدنى 15% من نطاق الـ 24 ساعة (${pricePosition.toFixed(
           1
         )}%)`
       );
     } else if (pricePosition <= 60) {
-      totalScore += 10;
+      totalScore += 5;
       reasons.push(
         `💎 السعر في أدنى 60% من نطاق الـ 24 ساعة (${pricePosition.toFixed(
           1
@@ -379,15 +381,15 @@ class ProfessionalTradingSystem {
     // --- 5. Volatility Context (سياق التقلب) ---
     const regime = this.detectMarketRegime(indicators);
 
-    if (regime === "RANGE") totalScore -= 10;
-    if (regime === "DOWNTREND") totalScore -= 15;
+    if (regime === "RANGE") totalScore -= 15;
+    if (regime === "DOWNTREND") totalScore -= 30;
     if (regime === "UPTREND") totalScore += 10;
 
     // لو الـ ATR عالي جداً مقارنة بالسعر، ده معناه Risk عالي
     const volatilityPct = (indicators.atr / indicators.close) * 100;
     if (volatilityPct > 3) {
       // تقلب أعنف من 3% في الشمعة الواحدة
-      totalScore -= 10;
+      totalScore -= 15;
       warnings.push(
         `⚡ تقلب مرتفع جداً (${volatilityPct.toFixed(2)}%) - خطر عالٍ`
       );
@@ -403,7 +405,16 @@ class ProfessionalTradingSystem {
     }
 
     // حساب الـ Confidence النهائي مع
+
     const confidence = Math.max(0, Math.min(100, Math.round(totalScore)));
+
+    const priceReversed = this.isPriceReversing(symbol);
+
+    // إذا كانت الثقة عالية جداً ولكن السعر لا يزال ينزف (شمعة حمراء)
+    if (confidence > 80 && !priceReversed) {
+      confidence = 40; // خفض الثقة لأننا لا نشتري سكيناً ساقطة
+      reasons.push("⏳ بانتظار تأكيد ارتداد السعر (Confirmation)");
+    }
 
     return {
       confidence,
@@ -414,6 +425,23 @@ class ProfessionalTradingSystem {
       volatility: volatilityPct,
       pricePosition,
     };
+  }
+
+  // دالة للتأكد من أن السعر بدأ يرتد فعلياً وليس مجرد سقوط حر
+  isPriceReversing(symbol) {
+    const candles = this.marketData[symbol]?.candles;
+    if (!candles || candles.length < 5) return false;
+
+    const lastCandle = candles[candles.length - 1]; // الشمعة الحالية
+    const prevCandle = candles[candles.length - 2]; // الشمعة السابقة المكتملة
+
+    // شرط التأكيد: الشمعة الحالية تجاوزت منتصف الشمعة الهابطة السابقة (Bullish Piercing)
+    // أو أن الإغلاق الحالي أعلى من إغلاق الشمعة السابقة
+    const isUpward = lastCandle[4] > prevCandle[4];
+    const highLowDiff = prevCandle[2] - prevCandle[3];
+    const recoveredSome = lastCandle[4] > prevCandle[3] + highLowDiff * 0.3;
+
+    return isUpward && recoveredSome;
   }
 
   checkPriceStability(symbol, supportPrice) {
