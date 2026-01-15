@@ -14,6 +14,15 @@ class DatabaseManager {
       driver: sqlite3.Database,
     });
 
+    // --- 🛠️ حل مشكلة SQLITE_BUSY (إضافة هذه الأسطر) ---
+    // تفعيل وضع WAL يسمح للقراء والكتاب بالعمل في نفس الوقت
+    await this.db.run("PRAGMA journal_mode = WAL;");
+    // جعل الكتابة متزامنة بشكل طبيعي (أسرع وأخف على القرص)
+    await this.db.run("PRAGMA synchronous = NORMAL;");
+    // إعطاء مهلة 5 ثواني للانتظار قبل إصدار خطأ BUSY
+    await this.db.run("PRAGMA busy_timeout = 5000;");
+    // -----------------------------------------------
+
     // إنشاء الجداول
     await this.db.exec(`
       CREATE TABLE IF NOT EXISTS candles (
