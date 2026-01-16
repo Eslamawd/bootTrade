@@ -257,7 +257,6 @@ class ProfessionalTradingSystem {
       const currentPrice = candles[candles.length - 1][4];
       const range = high24h - low24h || 1;
       const pricePosition = ((currentPrice - low24h) / range) * 100;
-      
 
       await this.dbManager.saveTechnicalIndicators(symbol, {
         rsi: currentRSI,
@@ -406,13 +405,13 @@ class ProfessionalTradingSystem {
 
     // حساب الـ Confidence النهائي مع
 
-    const confidence = Math.max(0, Math.min(100, Math.round(totalScore)));
+    let confidence = Math.max(0, Math.min(100, Math.round(totalScore)));
 
     const priceReversed = this.isPriceReversing(symbol);
 
     // إذا كانت الثقة عالية جداً ولكن السعر لا يزال ينزف (شمعة حمراء)
     if (confidence > 80 && !priceReversed) {
-      confidence = 40; // خفض الثقة لأننا لا نشتري سكيناً ساقطة
+      confidence = 70; // خفض الثقة لأننا لا نشتري سكيناً ساقطة
       reasons.push("⏳ بانتظار تأكيد ارتداد السعر (Confirmation)");
     }
 
@@ -454,6 +453,17 @@ class ProfessionalTradingSystem {
     return last2.every(
       (c) => c[3] >= supportPrice * 0.998 // الذيل ماكسرش الدعم
     );
+  }
+  detectMarketRegime(ind) {
+    const volatility = ind.atr / ind.close;
+    const trendStrength = Math.abs(ind.sma50 - ind.sma200) / ind.close;
+
+    if (volatility > 0.035) return "HIGH_VOLATILITY";
+    if (trendStrength < 0.004) return "RANGE";
+    if (ind.close > ind.sma50 && ind.sma50 > ind.sma200) return "UPTREND";
+    if (ind.close < ind.sma50 && ind.sma50 < ind.sma200) return "DOWNTREND";
+
+    return "TRANSITION";
   }
 
   analyzeWhales(symbol, orderBook, indicators) {
@@ -515,18 +525,6 @@ class ProfessionalTradingSystem {
       .catch(() => {});
 
     return { score, reasons, warnings, whales, dynamicThreshold };
-  }
-
-  detectMarketRegime(ind) {
-    const volatility = ind.atr / ind.close;
-    const trendStrength = Math.abs(ind.sma50 - ind.sma200) / ind.close;
-
-    if (volatility > 0.035) return "HIGH_VOLATILITY";
-    if (trendStrength < 0.004) return "RANGE";
-    if (ind.close > ind.sma50 && ind.sma50 > ind.sma200) return "UPTREND";
-    if (ind.close < ind.sma50 && ind.sma50 < ind.sma200) return "DOWNTREND";
-
-    return "TRANSITION";
   }
 
   analyzeOrderBookDynamics(symbol, orderBook) {
