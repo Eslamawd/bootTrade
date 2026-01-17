@@ -496,6 +496,7 @@ class ProfessionalTradingSystem {
     const firstLow = firstCandle[3];
     const firstClose = firstCandle[4];
 
+    const secondOpen = secondCandle[1];
     const secondHigh = secondCandle[2];
     const secondLow = secondCandle[3];
     const secondClose = secondCandle[4];
