@@ -23,7 +23,7 @@ const CONFIG = {
   ],
   MAX_CONCURRENT_TRADES: 5,
   MAX_SPREAD: 0.0012, // 0.12% أقصى سبريد مقبول
-  UPDATE_INTERVAL: 5000, // أبطأ قليلاً لإعطاء فرصة لتحليل البيانات
+  UPDATE_INTERVAL: 30000, // أبطأ قليلاً لإعطاء فرصة لتحليل البيانات
   MAX_MONITOR_TIME: 120 * 60, // ساعتين كحد أقصى
   COOLDOWN_TIME: 600000, // 5 دقائق
 
@@ -34,7 +34,7 @@ const CONFIG = {
   // إعدادات مصفوفة القرار
   MIN_CONFIDENCE: 83,
   MAX_RSI_ENTRY: 60,
-  MIN_VOLUME_RATIO: 1.9,
+  MIN_VOLUME_RATIO: 1.8,
 };
 
 class ProfessionalTradingSystem {
@@ -99,7 +99,7 @@ class ProfessionalTradingSystem {
       const dbCandles = await this.dbManager.getHistoricalCandles(
         symbol,
         CONFIG.TIMEFRAME,
-        CONFIG.CANDLE_LIMIT
+        CONFIG.CANDLE_LIMIT,
       );
 
       if (dbCandles && dbCandles.length >= 220) {
@@ -122,7 +122,7 @@ class ProfessionalTradingSystem {
         };
 
         console.log(
-          `📊 ${symbol}: تم تحميل ${candles.length} شمعة من قاعدة البيانات`
+          `📊 ${symbol}: تم تحميل ${candles.length} شمعة من قاعدة البيانات`,
         );
         return true;
       }
@@ -133,7 +133,7 @@ class ProfessionalTradingSystem {
         symbol,
         CONFIG.TIMEFRAME,
         undefined,
-        CONFIG.CANDLE_LIMIT
+        CONFIG.CANDLE_LIMIT,
       );
 
       if (freshCandles && freshCandles.length > 0) {
@@ -165,7 +165,7 @@ class ProfessionalTradingSystem {
         symbol,
         CONFIG.TIMEFRAME,
         undefined,
-        5
+        5,
       );
 
       if (latestCandles && latestCandles.length > 0) {
@@ -313,20 +313,20 @@ class ProfessionalTradingSystem {
       totalScore += 15; // مرحلة القاع
       reasons.push(
         `💎 السعر في أدنى 15% من نطاق الـ 24 ساعة (${pricePosition.toFixed(
-          1
-        )}%)`
+          1,
+        )}%)`,
       );
     } else if (pricePosition <= 60) {
       totalScore += 5;
       reasons.push(
         `💎 السعر في أدنى 60% من نطاق الـ 24 ساعة (${pricePosition.toFixed(
-          1
-        )}%)`
+          1,
+        )}%)`,
       );
     } else if (pricePosition >= 70) {
       totalScore -= 20; // مرحلة القمة
       warnings.push(
-        `⚠️ السعر متضخم وقريب من أعلى سعر يومي (${pricePosition.toFixed(1)}%)`
+        `⚠️ السعر متضخم وقريب من أعلى سعر يومي (${pricePosition.toFixed(1)}%)`,
       );
     }
 
@@ -345,8 +345,8 @@ class ProfessionalTradingSystem {
       totalScore += 20;
       reasons.push(
         `📉 RSI دايناميك: تحت المتوسط بـ ${Math.abs(rsiDiff).toFixed(
-          1
-        )} (تجميع)`
+          1,
+        )} (تجميع)`,
       );
     } else if (rsiDiff > 15) {
       totalScore -= 15;
@@ -367,7 +367,7 @@ class ProfessionalTradingSystem {
       ) {
         totalScore += 22;
         reasons.push(
-          `🔥 انفجار فوليوم ذكي (${indicators.volumeRatio.toFixed(1)}x)`
+          `🔥 انفجار فوليوم ذكي (${indicators.volumeRatio.toFixed(1)}x)`,
         );
       }
 
@@ -397,7 +397,7 @@ class ProfessionalTradingSystem {
       // تقلب أعنف من 3% في الشمعة الواحدة
       totalScore -= 15;
       warnings.push(
-        `⚡ تقلب مرتفع جداً (${volatilityPct.toFixed(2)}%) - خطر عالٍ`
+        `⚡ تقلب مرتفع جداً (${volatilityPct.toFixed(2)}%) - خطر عالٍ`,
       );
     }
 
@@ -410,15 +410,20 @@ class ProfessionalTradingSystem {
       reasons.push("🌊 اتجاه صاعد مؤسسي (Price > SMA50 > SMA200)");
     }
 
-    // حساب الـ Confidence النهائي مع
+    // --- 7. تحليل الشموع اليابانية (الإضافة الجديدة) ---
+    const candleAnalysis = await this.isPriceReversing(symbol, indicators);
+    if (candleAnalysis && candleAnalysis.isValid) {
+      totalScore += candleAnalysis.score;
+      reasons.push(
+        `🕯️ نمط شمعي: ${candleAnalysis.pattern} (+${candleAnalysis.score} نقطة)`,
+      );
 
-    const priceReversed = this.isPriceReversing(symbol);
-
-    // إذا كانت الثقة عالية جداً ولكن السعر لا يزال ينزف (شمعة حمراء)
-    if (totalScore > 80 && !priceReversed) {
-      totalScore -= 30; // خفض الثقة لأننا لا نشتري سكيناً ساقطة
-      reasons.push("⏳ بانتظار تأكيد ارتداد السعر (Confirmation)");
+      // إذا كان النمط قوي جداً، نخفض الحد الأدنى للثقة
+      if (candleAnalysis.score >= 30) {
+        reasons.push(`💎 إشارة انعكاس قوية جداً`);
+      }
     }
+
     const confidence = Math.max(0, Math.min(100, Math.round(totalScore)));
 
     return {
@@ -431,22 +436,173 @@ class ProfessionalTradingSystem {
       pricePosition,
     };
   }
+  // ==================== دوال تحليل الشموع اليابانية ====================
 
-  // دالة للتأكد من أن السعر بدأ يرتد فعلياً وليس مجرد سقوط حر
-  isPriceReversing(symbol) {
+  // 1. دالة الكشف عن المطرقة (Hammer)
+  isHammerCandle(candle) {
+    if (!candle || candle.length < 5) return false;
+
+    const open = candle[1];
+    const high = candle[2];
+    const low = candle[3];
+    const close = candle[4];
+
+    const body = Math.abs(close - open);
+    const lowerWick = Math.min(open, close) - low;
+    const upperWick = high - Math.max(open, close);
+    const totalRange = high - low;
+
+    if (totalRange === 0) return false;
+
+    // شروط المطرقة: ذيل سفلي طويل (أقل من 3 مرات الجسم)، جسم صغير
+    const isSmallBody = body / totalRange < 0.3;
+    const isLongLowerWick = lowerWick > body * 2;
+    const isShortUpperWick = upperWick < body * 0.5;
+
+    return isSmallBody && isLongLowerWick && isShortUpperWick;
+  }
+
+  // 2. دالة الكشف عن الابتلاع الصاعد (Bullish Engulfing)
+  isBullishEngulfing(prevCandle, currentCandle) {
+    if (
+      !prevCandle ||
+      !currentCandle ||
+      prevCandle.length < 5 ||
+      currentCandle.length < 5
+    )
+      return false;
+
+    const prevOpen = prevCandle[1];
+    const prevClose = prevCandle[4];
+    const currentOpen = currentCandle[1];
+    const currentClose = currentCandle[4];
+
+    // الشمعة السابقة هابطة (أحمر)
+    const isPrevBearish = prevClose < prevOpen;
+    // الشمعة الحالية صاعدة (أخضر)
+    const isCurrentBullish = currentClose > currentOpen;
+    // جسم الشمعة الحالية يبتلع جسم الشمعة السابقة
+    const isEngulfing = currentOpen < prevClose && currentClose > prevOpen;
+
+    return isPrevBearish && isCurrentBullish && isEngulfing;
+  }
+
+  // 3. دالة الكشف عن نجمة الصباح (Morning Star)
+  isMorningStar(firstCandle, secondCandle, thirdCandle) {
+    if (!firstCandle || !secondCandle || !thirdCandle) return false;
+
+    const firstOpen = firstCandle[1];
+    const firstHigh = firstCandle[2];
+    const firstLow = firstCandle[3];
+    const firstClose = firstCandle[4];
+
+    const secondHigh = secondCandle[2];
+    const secondLow = secondCandle[3];
+    const secondClose = secondCandle[4];
+
+    const thirdOpen = thirdCandle[1];
+    const thirdClose = thirdCandle[4];
+
+    // الشمعة الأولى: هابطة طويلة
+    const firstBody = Math.abs(firstClose - firstOpen);
+    const firstRange = firstHigh - firstLow;
+    const isFirstLongBearish =
+      firstClose < firstOpen && firstBody / firstRange > 0.6 && firstBody > 0; // تأكد أن الجسم ليس صفر
+
+    // الشمعة الثانية: جسم صغير (نجمة) وفجوة هبوطية
+    const secondBody = Math.abs(secondClose - secondOpen);
+    const secondRange = secondHigh - secondLow;
+    const isSecondSmall = secondRange > 0 && secondBody / secondRange < 0.3;
+
+    // فجوة هبوطية: ارتفاع الشمعة الثانية أقل من إغلاق الأولى
+    const isGapDown = secondHigh < firstClose;
+
+    // الشمعة الثالثة: صاعدة وتغلق فوق منتصف جسم الشمعة الأولى
+    const isThirdBullish = thirdClose > thirdOpen;
+    const firstMid = (firstOpen + firstClose) / 2;
+    const closesAboveFirstMid = thirdClose > firstMid;
+
+    return (
+      isFirstLongBearish &&
+      isSecondSmall &&
+      isGapDown &&
+      isThirdBullish &&
+      closesAboveFirstMid
+    );
+  }
+
+  // 4. دالة الكشف عن الدوجي (Doji)
+  isDojiCandle(candle) {
+    if (!candle || candle.length < 5) return false;
+
+    const open = candle[1];
+    const close = candle[4];
+    const high = candle[2];
+    const low = candle[3];
+
+    const body = Math.abs(close - open);
+    const range = high - low;
+
+    if (range === 0) return false;
+
+    // الدوجي: جسم صغير جداً (أقل من 10% من المدى)
+    return body / range < 0.1;
+  }
+
+  // ==================== دالة محسنة لاكتشاف الارتداد ====================
+  async isPriceReversing(symbol, indicators) {
     const candles = this.marketData[symbol]?.candles;
     if (!candles || candles.length < 5) return false;
 
-    const lastCandle = candles[candles.length - 1]; // الشمعة الحالية
-    const prevCandle = candles[candles.length - 2]; // الشمعة السابقة المكتملة
+    // نحتاج آخر 3 شمعات مكتملة
+    const completedCandles = candles.slice(-4, -1);
+    if (completedCandles.length < 3) return false;
 
-    // شرط التأكيد: الشمعة الحالية تجاوزت منتصف الشمعة الهابطة السابقة (Bullish Piercing)
-    // أو أن الإغلاق الحالي أعلى من إغلاق الشمعة السابقة
-    const isUpward = lastCandle[4] > prevCandle[4];
-    const highLowDiff = prevCandle[2] - prevCandle[3];
-    const recoveredSome = lastCandle[4] > prevCandle[3] + highLowDiff * 0.3;
+    const first = completedCandles[0]; // الأقدم
+    const second = completedCandles[1]; // الوسطى
+    const third = completedCandles[2]; // الأحدث
 
-    return isUpward && recoveredSome;
+    // الكشف عن الأنماط
+    const patterns = {
+      hammer: this.isHammerCandle(third),
+      bullishEngulfing: this.isBullishEngulfing(second, third),
+      morningStar: this.isMorningStar(first, second, third),
+      doji: this.isDojiCandle(third),
+    };
+
+    // تحقق من وجود نمط انعكاسي قوي
+    if (patterns.hammer || patterns.bullishEngulfing || patterns.morningStar) {
+      // جلب بيانات RSI للتأكيد
+      if (indicators && indicators.rsi < 40) {
+        // وجود نمط انعكاسي + RSI في منطقة ذروة البيع = إشارة قوية
+        const patternName = patterns.morningStar
+          ? "نجمة الصباح"
+          : patterns.bullishEngulfing
+            ? "الابتلاع الصاعد"
+            : patterns.hammer
+              ? "المطرقة"
+              : "الدوجي";
+
+        console.log(
+          `✅ ${symbol}: اكتشاف نمط انعكاسي (${patternName}) مع RSI ${indicators.rsi.toFixed(1)}`,
+        );
+        return {
+          isValid: true,
+          pattern: patternName,
+          score: patterns.morningStar
+            ? 35
+            : patterns.bullishEngulfing
+              ? 30
+              : patterns.hammer
+                ? 25
+                : patterns.doji
+                  ? 15
+                  : 0,
+        };
+      }
+    }
+
+    return false;
   }
 
   checkPriceStability(symbol, supportPrice) {
@@ -457,7 +613,7 @@ class ProfessionalTradingSystem {
     const last2 = candles.slice(-3, -1);
 
     return last2.every(
-      (c) => c[3] >= supportPrice * 0.998 // الذيل ماكسرش الدعم
+      (c) => c[3] >= supportPrice * 0.998, // الذيل ماكسرش الدعم
     );
   }
   detectMarketRegime(ind) {
@@ -483,7 +639,7 @@ class ProfessionalTradingSystem {
 
     const dynamicThreshold = Math.min(
       Math.max(indicators.close * avgVolume * 0.001, 20000),
-      indicators.close * avgVolume * 0.02
+      indicators.close * avgVolume * 0.02,
     );
 
     let score = 0;
@@ -596,7 +752,7 @@ class ProfessionalTradingSystem {
       score += 20;
       const formattedVol = (bestCluster.volume / 1000).toFixed(0) + "K";
       reasons.push(
-        `🧱 تكتل سيولة (${bestCluster.count} جدران) بقوة $${formattedVol}`
+        `🧱 تكتل سيولة (${bestCluster.count} جدران) بقوة $${formattedVol}`,
       );
     }
 
@@ -660,7 +816,7 @@ class ProfessionalTradingSystem {
     if (obAnalysis?.strongWall?.price) {
       const stable = this.checkPriceStability(
         symbol,
-        obAnalysis.strongWall.price
+        obAnalysis.strongWall.price,
       );
       if (!stable) return null;
     }
@@ -698,8 +854,8 @@ class ProfessionalTradingSystem {
     ) {
       this.sendTelegram(
         `💎 *Super Whale Alert*\n${symbol}\nImbalance: ${obAnalysis.imbalance.toFixed(
-          1
-        )}x\nWhales: ${decision.whaleAnalysis.whales.length}`
+          1,
+        )}x\nWhales: ${decision.whaleAnalysis.whales.length}`,
       );
     }
 
@@ -714,7 +870,7 @@ class ProfessionalTradingSystem {
       indicators,
       decision.confidence,
       obAnalysis,
-      pricePosition
+      pricePosition,
     );
 
     if (!targets || targets.riskRewardRatio < 1.3) return null;
@@ -747,7 +903,7 @@ class ProfessionalTradingSystem {
     indicators,
     confidence,
     obAnalysis,
-    pricePosition
+    pricePosition,
   ) {
     // 1. حساب الـ ATR الأساسي
     const atr = indicators.atr || entryPrice * 0.008;
@@ -844,7 +1000,7 @@ class ProfessionalTradingSystem {
       const minRequiredBalance = 50; // زيادة الحد الأدنى لأمان أكثر
       if (myBalance < minRequiredBalance) {
         console.log(
-          `⚠️ الرصيد الحالي ($${myBalance.toFixed(2)}) منخفض جداً للدخول`
+          `⚠️ الرصيد الحالي ($${myBalance.toFixed(2)}) منخفض جداً للدخول`,
         );
         return;
       }
@@ -867,8 +1023,8 @@ class ProfessionalTradingSystem {
         opportunity.confidence > 92
           ? 0.5 // 50%
           : opportunity.confidence > 85
-          ? 0.2 // 2%
-          : 0.015; // 1.5%
+            ? 0.2 // 2%
+            : 0.015; // 1.5%
 
       // وزن الثقة بشكل أكثر توازناً
       const confidenceWeight = Math.min(1.5, opportunity.confidence / 100);
@@ -923,13 +1079,13 @@ class ProfessionalTradingSystem {
       if (riskToBalancePercent > 3) {
         console.log(
           `⛔ مخاطرة عالية جداً (${riskToBalancePercent.toFixed(
-            2
-          )}%) - إلغاء الصفقة`
+            2,
+          )}%) - إلغاء الصفقة`,
         );
         this.sendTelegram(
           `⛔ *مخاطرة عالية*: ${
             opportunity.symbol
-          } - ${riskToBalancePercent.toFixed(2)}%`
+          } - ${riskToBalancePercent.toFixed(2)}%`,
         );
         return;
       }
@@ -938,26 +1094,26 @@ class ProfessionalTradingSystem {
       console.log(`📊 حساب حجم الصفقة لـ ${opportunity.symbol}:`);
       console.log(`   - الرصيد: $${myBalance.toFixed(2)}`);
       console.log(
-        `   - نسبة المخاطرة السعرية: ${priceRiskPercent.toFixed(2)}%`
+        `   - نسبة المخاطرة السعرية: ${priceRiskPercent.toFixed(2)}%`,
       );
       console.log(
         `   - الثقة: ${
           opportunity.confidence
-        }% → وزن: ${confidenceWeight.toFixed(2)}`
+        }% → وزن: ${confidenceWeight.toFixed(2)}`,
       );
       console.log(
-        `   - عدد الحيتان: ${whaleCount} → وزن: ${whaleWeight.toFixed(2)}`
+        `   - عدد الحيتان: ${whaleCount} → وزن: ${whaleWeight.toFixed(2)}`,
       );
       console.log(
         `   - الانحراف: ${imbalance.toFixed(
-          2
-        )}x → وزن: ${imbalanceWeight.toFixed(2)}`
+          2,
+        )}x → وزن: ${imbalanceWeight.toFixed(2)}`,
       );
       console.log(`   - الحجم المحسوب: $${tradeSize.toFixed(2)}`);
       console.log(
         `   - المخاطرة الفعلية: $${riskAmount.toFixed(
-          2
-        )} (${riskToBalancePercent.toFixed(2)}% من الرصيد)`
+          2,
+        )} (${riskToBalancePercent.toFixed(2)}% من الرصيد)`,
       );
 
       // 10. إنشاء كائن الصفقة
@@ -1004,7 +1160,7 @@ class ProfessionalTradingSystem {
 
       // 11. منع الازدواجية
       const isAlreadyOpen = this.activeTrades.find(
-        (t) => t.symbol === trade.symbol
+        (t) => t.symbol === trade.symbol,
       );
       if (isAlreadyOpen) {
         console.log(`⏸️ ${trade.symbol}: صفقة نشطة بالفعل`);
@@ -1014,7 +1170,7 @@ class ProfessionalTradingSystem {
       // 12. التحقق من الحد الأقصى للصفقات المتزامنة
       if (this.activeTrades.length >= CONFIG.MAX_CONCURRENT_TRADES) {
         console.log(
-          `⏸️ وصلت للحد الأقصى للصفقات (${CONFIG.MAX_CONCURRENT_TRADES})`
+          `⏸️ وصلت للحد الأقصى للصفقات (${CONFIG.MAX_CONCURRENT_TRADES})`,
         );
         return;
       }
@@ -1034,12 +1190,12 @@ class ProfessionalTradingSystem {
           `💵 *الحجم:* $${tradeSize.toFixed(2)}\n` +
           `💰 *السعر:* $${opportunity.entryPrice.toFixed(4)}\n` +
           `🛡️ *الستوب:* $${opportunity.stopLoss.toFixed(
-            4
+            4,
           )} (${priceRiskPercent.toFixed(2)}%)\n` +
           `🎯 *الهدف:* $${opportunity.takeProfit.toFixed(4)}\n` +
           `⚖️ *R/R:* ${riskRewardRatio}:1\n` +
           `⚠️ *المخاطرة:* $${riskAmount.toFixed(
-            2
+            2,
           )} (${riskToBalancePercent.toFixed(2)}% من الرصيد)\n` +
           `📊 *الرصيد:* $${myBalance.toFixed(2)}\n` +
           `🔮 *الثقة:* ${opportunity.confidence}% ${whaleIcons}\n` +
@@ -1048,14 +1204,14 @@ class ProfessionalTradingSystem {
           `📝 *الأسباب:*\n${opportunity.reasons
             .slice(0, 3)
             .map((r) => `• ${r}`)
-            .join("\n")}`
+            .join("\n")}`,
       );
 
       // 15. بدء المراقبة
       this.startProfessionalMonitoring(trade);
 
       console.log(
-        `✅ تم تنفيذ صفقة ${trade.symbol} بحجم $${tradeSize.toFixed(2)}`
+        `✅ تم تنفيذ صفقة ${trade.symbol} بحجم $${tradeSize.toFixed(2)}`,
       );
     } catch (error) {
       console.error("❌ خطأ تنفيذ:", error);
@@ -1087,7 +1243,7 @@ class ProfessionalTradingSystem {
 
       // 2. جلب ATR اللحظي لاستخدامه في التريلينج ستوب
       const currentIndicators = await this.calculateTechnicalIndicators(
-        trade.symbol
+        trade.symbol,
       );
 
       if (!currentIndicators || !currentIndicators.atr) {
@@ -1105,7 +1261,7 @@ class ProfessionalTradingSystem {
         trade,
         currentPrice,
         netProfit,
-        orderBook
+        orderBook,
       );
 
       if (exitDecision.exit) {
@@ -1196,7 +1352,7 @@ class ProfessionalTradingSystem {
     // 1. 🛡️ منطق "تبخر الجدار" (المصيدة): تعديل للصبر
     if (trade.wallPrice) {
       const currentWall = orderBook.bids.find(
-        (b) => Math.abs(b[0] - trade.wallPrice) < trade.entryPrice * 0.0001
+        (b) => Math.abs(b[0] - trade.wallPrice) < trade.entryPrice * 0.0001,
       );
       const currentWallVolume = currentWall
         ? currentWall[0] * currentWall[1]
@@ -1242,7 +1398,7 @@ class ProfessionalTradingSystem {
         trade.currentStopLoss = currentPrice * 0.994; // احجز ربحك الحالي
         trade.takeProfit = currentPrice * 1.012; // ارفع الهدف 1.2% إضافية
         console.log(
-          `🚀 ${trade.symbol}: انفجار فوليوم! رحلنا الهدف للصيد الأكبر.`
+          `🚀 ${trade.symbol}: انفجار فوليوم! رحلنا الهدف للصيد الأكبر.`,
         );
         return { exit: false };
       }
@@ -1285,11 +1441,11 @@ class ProfessionalTradingSystem {
     const log = `${new Date().toISOString()},${
       trade.symbol
     },${trade.entryPrice.toFixed(4)},${exitPrice.toFixed(
-      4
+      4,
     )},${netPnlPercent.toFixed(3)}%,${netPnlUsd.toFixed(
-      3
+      3,
     )},${trade.confidence.toFixed(1)},${trade.rsi.toFixed(
-      1
+      1,
     )},${trade.volumeRatio.toFixed(1)},${
       trade.stopLossHistory.length - 1
     },"${trade.reasons.slice(0, 2).join(" | ")}"\n`;
@@ -1309,7 +1465,7 @@ class ProfessionalTradingSystem {
         `🛑 ${trade.stopLossHistory.length - 1} حركة ستوب\n` +
         `📝 ${this.translateReason(reason)}\n` +
         `🎯 الثقة: ${trade.confidence.toFixed(1)}%\n` +
-        `🕐 ${new Date().toLocaleTimeString("ar-SA")}`
+        `🕐 ${new Date().toLocaleTimeString("ar-SA")}`,
     );
 
     this.activeTrades = this.activeTrades.filter((t) => t.id !== trade.id);
@@ -1365,10 +1521,10 @@ class ProfessionalTradingSystem {
 
         report += `${index + 1}. *${symbol}* (${confidence.toFixed(1)}%)\n`;
         report += `   ⚖️ السيولة: ${powerBar} (${orderBookData.imbalance.toFixed(
-          1
+          1,
         )}x)\n`;
         report += `   • RSI: ${ind.rsi.toFixed(
-          1
+          1,
         )} | حجم: ${ind.volumeRatio.toFixed(1)}x\n`;
 
         report += `   • ATR: $${ind.atr.toFixed(4)} | موقع السعر: ${
@@ -1397,7 +1553,7 @@ class ProfessionalTradingSystem {
     // حساب عدد المربعات الخضراء بناءً على الـ imbalance (1.0 تعادل المنتصف)
     let greenCount = Math.min(
       totalChars,
-      Math.max(1, Math.floor((imbalance / 2) * totalChars))
+      Math.max(1, Math.floor((imbalance / 2) * totalChars)),
     );
     if (imbalance > 2) greenCount = totalChars; // سيولة شراء ساحقة
 
@@ -1413,7 +1569,7 @@ class ProfessionalTradingSystem {
   connectSingleSymbolWS(symbol) {
     const streamName = symbol.replace("/", "").toLowerCase();
     const ws = new WebSocket(
-      `wss://stream.binance.com:9443/ws/${streamName}@depth20@100ms`
+      `wss://stream.binance.com:9443/ws/${streamName}@depth20@100ms`,
     );
 
     // حالة صحة الـ WebSocket لكل زوج
@@ -1486,9 +1642,12 @@ class ProfessionalTradingSystem {
   async start() {
     this.sendTelegram("🏦 *بدء النظام الاحترافي مع قاعدة بيانات SQLite*");
     // تشغيل تنظيف قاعدة البيانات كل 24 ساعة
-    setInterval(async () => {
-      await this.dbManager.cleanupOldData(2); // نحتفظ بآخر يومين فقط من الشموع والمؤشرات
-    }, 24 * 60 * 60 * 1000);
+    setInterval(
+      async () => {
+        await this.dbManager.cleanupOldData(2); // نحتفظ بآخر يومين فقط من الشموع والمؤشرات
+      },
+      24 * 60 * 60 * 1000,
+    );
 
     await this.exchange.loadMarkets();
     this.fees = {};
@@ -1517,18 +1676,42 @@ class ProfessionalTradingSystem {
 
     this.connectWebSockets();
 
-    // تحديث البيانات كل دقيقة
+    let isUpdatingMarketData = false;
+
     setInterval(async () => {
-      for (const symbol of CONFIG.SYMBOLS) {
-        await this.updateMarketData(symbol);
+      if (isUpdatingMarketData) return;
+      isUpdatingMarketData = true;
+
+      try {
+        for (const symbol of CONFIG.SYMBOLS) {
+          await this.updateMarketData(symbol);
+        }
+      } catch (e) {
+        console.error("❌ Market Data Update Error:", e.message);
+      } finally {
+        isUpdatingMarketData = false;
       }
     }, 60000);
 
     // البحث عن فرص كل 5 ثواني
+    let isScanning = false;
+
     setInterval(async () => {
-      for (const symbol of CONFIG.SYMBOLS) {
-        const opp = await this.analyzeForEntry(symbol, this.orderBooks[symbol]);
-        if (opp) await this.executeTrade(opp);
+      if (isScanning) return;
+      isScanning = true;
+
+      try {
+        for (const symbol of CONFIG.SYMBOLS) {
+          const opp = await this.analyzeForEntry(
+            symbol,
+            this.orderBooks[symbol],
+          );
+          if (opp) await this.executeTrade(opp);
+        }
+      } catch (e) {
+        console.error("❌ Scan Error:", e.message);
+      } finally {
+        isScanning = false;
       }
     }, CONFIG.UPDATE_INTERVAL);
 
@@ -1546,16 +1729,25 @@ class ProfessionalTradingSystem {
             `🎛️ متوسط الثقة: ${stats.avg_confidence?.toFixed(1) || 0}%\n` +
             `⏱️ متوسط المدة: ${
               (stats.avg_duration / 60)?.toFixed(1) || 0
-            } دقيقة`
+            } دقيقة`,
         );
       }
     }, 3 * 3600000);
 
-    setInterval(() => {
-      this.sendMonitoringReport();
+    let isMonitoring = false;
+
+    setInterval(async () => {
+      if (isMonitoring) return;
+      isMonitoring = true;
+
+      try {
+        await this.sendMonitoringReport();
+      } catch (e) {
+        console.error("❌ Monitoring Report Error:", e.message);
+      } finally {
+        isMonitoring = false;
+      }
     }, 3 * 3600000);
-    // استدعاء أول مرة فور تشغيل البوت
-    this.sendMonitoringReport();
 
     this.sendTelegram("✅ *النظام يعمل بنجاح مع قاعدة بيانات SQLite*");
   }
@@ -1577,7 +1769,7 @@ process.on("SIGINT", async () => {
         `💾 *بيانات قاعدة البيانات:*\n` +
         `📈 إجمالي السجلات: ${stats?.total_trades || 0}\n` +
         `📊 متوسط الربح: ${stats?.avg_pnl_percent?.toFixed(2) || 0}%\n` +
-        `⏱️ ${new Date().toLocaleTimeString("ar-SA")}`
+        `⏱️ ${new Date().toLocaleTimeString("ar-SA")}`,
     );
   }
   setTimeout(() => process.exit(0), 1000);
