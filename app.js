@@ -10,7 +10,11 @@ const CONFIG = {
   SYMBOLS: [
     "BTC/USDT", // الرئيسي - أعلى سيولة
     "BNB/USDT", // منصة Binance - عالية السيولة
-    "SOL/USDT", // سريع الحركة - فرص جيدة
+    "SOL/USDT",
+    "ETH/USDT", // الرئيسي الثاني - سيولة ممتازة
+    "DOT/USDT",
+    "ADA/USDT",
+    "DOGE/USDT", // متقلب وشائع
     "XRP/USDT", // متقلب مع حجم جيد
     "MATIC/USDT", // جيد للمضاربة قصيرة المدى
   ],
@@ -405,15 +409,14 @@ class ProfessionalTradingSystem {
 
     // حساب الـ Confidence النهائي مع
 
-    let confidence = Math.max(0, Math.min(100, Math.round(totalScore)));
-
     const priceReversed = this.isPriceReversing(symbol);
 
     // إذا كانت الثقة عالية جداً ولكن السعر لا يزال ينزف (شمعة حمراء)
-    if (confidence > 80 && !priceReversed) {
-      confidence = 70; // خفض الثقة لأننا لا نشتري سكيناً ساقطة
+    if (totalScore > 80 && !priceReversed) {
+      totalScore -= 30; // خفض الثقة لأننا لا نشتري سكيناً ساقطة
       reasons.push("⏳ بانتظار تأكيد ارتداد السعر (Confirmation)");
     }
+    const confidence = Math.max(0, Math.min(100, Math.round(totalScore)));
 
     return {
       confidence,
@@ -1543,8 +1546,7 @@ class ProfessionalTradingSystem {
             } دقيقة`
         );
       }
-    }, 2 * 3600000);
-    // إرسال تقرير المراقبة كل ساعة (3600000 مللي ثانية)
+    }, 3 * 3600000);
 
     setInterval(() => {
       this.sendMonitoringReport();
