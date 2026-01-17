@@ -17,6 +17,9 @@ const CONFIG = {
     "DOGE/USDT", // متقلب وشائع
     "XRP/USDT", // متقلب مع حجم جيد
     "MATIC/USDT", // جيد للمضاربة قصيرة المدى
+    "1000CAT/USDT",
+    "0G/USDT",
+    "1000CHEEMS/USDT",
   ],
   MAX_CONCURRENT_TRADES: 5,
   MAX_SPREAD: 0.0012, // 0.12% أقصى سبريد مقبول
