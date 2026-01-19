@@ -23,7 +23,7 @@ const CONFIG = {
   ],
   MAX_CONCURRENT_TRADES: 5,
   MAX_SPREAD: 0.0012, // 0.12% أقصى سبريد مقبول
-  UPDATE_INTERVAL: 30000, // أبطأ قليلاً لإعطاء فرصة لتحليل البيانات
+  UPDATE_INTERVAL: 60000, // أبطأ قليلاً لإعطاء فرصة لتحليل البيانات
   MAX_MONITOR_TIME: 120 * 60, // ساعتين كحد أقصى
   COOLDOWN_TIME: 600000, // 5 دقائق
 
@@ -54,6 +54,9 @@ class ProfessionalTradingSystem {
     this.activeTrades = [];
     this.cooldowns = {};
     this.marketData = {}; // لتخزين البيانات المؤقتة
+    this.wsHealth = {};
+    this.lastAnalyzedCandle = {};
+    this.lastSavedCandle = {};
 
     // Telegram
     if (process.env.TELEGRAM_TOKEN && process.env.TELEGRAM_CHAT_ID) {
@@ -169,6 +172,17 @@ class ProfessionalTradingSystem {
       );
 
       if (latestCandles && latestCandles.length > 0) {
+        let isNewCandle = false;
+        const latestTimestamp = latestCandles[latestCandles.length - 2][0];
+
+        if (
+          !this.lastAnalyzedCandle[symbol] ||
+          this.lastAnalyzedCandle[symbol] !== latestTimestamp
+        ) {
+          isNewCandle = true;
+          this.lastAnalyzedCandle[symbol] = latestTimestamp;
+        }
+
         if (!this.marketData[symbol]) {
           this.marketData[symbol] = { candles: [] };
         }
@@ -197,11 +211,27 @@ class ProfessionalTradingSystem {
         this.marketData[symbol].candles = localCandles;
         this.marketData[symbol].lastUpdate = Date.now();
 
-        // حفظ في الداتا بيز
-        for (const candle of latestCandles) {
-          await this.dbManager.saveCandle(symbol, candle, CONFIG.TIMEFRAME);
+        const newCandles = [];
+
+        const completedCandles = latestCandles.slice(0, -1);
+
+        for (const candle of completedCandles) {
+          const ts = candle[0];
+          if (
+            !this.lastSavedCandle[symbol] ||
+            ts > this.lastSavedCandle[symbol]
+          ) {
+            newCandles.push(candle);
+            this.lastSavedCandle[symbol] = ts;
+          }
         }
-        return true;
+
+        await Promise.all(
+          newCandles.map((c) =>
+            this.dbManager.saveCandle(symbol, c, CONFIG.TIMEFRAME),
+          ),
+        );
+        return isNewCandle;
       }
     } catch (error) {
       console.error(`❌ خطأ في تحديث البيانات لـ ${symbol}:`, error.message);
@@ -217,7 +247,9 @@ class ProfessionalTradingSystem {
     if (candles.length < 220) return null;
 
     const sortedCandles = [...candles].sort((a, b) => a[0] - b[0]);
-    const completedCandles = sortedCandles.slice(0, -1);
+    const completedCandles = sortedCandles.slice(0, -1); // كل الشموع المكتملة
+    const lastCompletedCandle = completedCandles.at(-1);
+    const completedCandleTs = lastCompletedCandle[0];
 
     const closes = completedCandles.map((c) => c[4]);
     const highs = completedCandles.map((c) => c[2]);
@@ -265,19 +297,21 @@ class ProfessionalTradingSystem {
       const range = high24h - low24h || 1;
       const pricePosition = ((currentPrice - low24h) / range) * 100;
 
-      await this.dbManager.saveTechnicalIndicators(symbol, {
-        rsi: currentRSI,
-        prevRsi: prevRSI,
-        rsiSMA20: currentRsiSMA,
-        close: lastClose,
-        atr: currentATR,
-        prevClose: prevClose,
-        volumeRatio,
-        avgVolume,
-        sma50: sma50Values[sma50Values.length - 1],
-        sma200: sma200Values[sma200Values.length - 1],
-        pricePosition,
-      });
+      if (this.lastAnalyzedCandle[symbol] === completedCandleTs) {
+        await this.dbManager.saveTechnicalIndicators(symbol, {
+          rsi: currentRSI,
+          prevRsi: prevRSI,
+          rsiSMA20: currentRsiSMA,
+          close: lastClose,
+          atr: currentATR,
+          prevClose: prevClose,
+          volumeRatio,
+          avgVolume,
+          sma50: sma50Values[sma50Values.length - 1],
+          sma200: sma200Values[sma200Values.length - 1],
+          pricePosition,
+        });
+      }
 
       return {
         rsi: currentRSI,
@@ -289,8 +323,8 @@ class ProfessionalTradingSystem {
         prevClose: prevClose,
         volumeRatio,
         avgVolume,
-        sma50: sma50Values.pop(),
-        sma200: sma200Values.pop(),
+        sma50: sma50Values[sma50Values.length - 1],
+        sma200: sma200Values[sma200Values.length - 1],
         timestamp: Date.now(),
         pricePosition,
       };
@@ -1022,9 +1056,9 @@ class ProfessionalTradingSystem {
       // 4. معادلة حجم الصفقة الذكية مع تعديلات
       const baseRiskMultiplier =
         opportunity.confidence > 92
-          ? 0.5 // 50%
+          ? 0.2 // 50%
           : opportunity.confidence > 85
-            ? 0.2 // 2%
+            ? 0.1 // 2%
             : 0.015; // 1.5%
 
       // وزن الثقة بشكل أكثر توازناً
@@ -1304,8 +1338,8 @@ class ProfessionalTradingSystem {
   updateTrailingStop(trade, currentPrice, currentProfit, activeATR) {
     // 1. تأمين نقطة التعادل (Breakeven)
     // بمجرد وصول الربح لـ 0.3%، ننقل الستوب لوز لمنطقة الدخول
-    if (currentProfit > 0.9 && trade.currentStopLoss < trade.entryPrice) {
-      trade.currentStopLoss = trade.entryPrice * 1.0005; // الدخول + عمولة بسيطة
+    if (currentProfit > 1.2 && trade.currentStopLoss < trade.entryPrice) {
+      trade.currentStopLoss = trade.entryPrice * 1.005; // الدخول + عمولة بسيطة
       trade.stopLossHistory.push({
         price: trade.currentStopLoss,
         time: Date.now(),
@@ -1315,10 +1349,10 @@ class ProfessionalTradingSystem {
 
     // أضف هذا الشرط بين الخطوة 1 والخطوة 2
     if (
-      currentProfit > 1.3 &&
+      currentProfit > 1.7 &&
       trade.currentStopLoss < trade.entryPrice * 1.01
     ) {
-      trade.currentStopLoss = trade.entryPrice * 1.008; // احجز ربح 0.8% فوراً
+      trade.currentStopLoss = trade.entryPrice * 1.009; // احجز ربح 0.8% فوراً
       trade.stopLossHistory.push({
         price: trade.currentStopLoss,
         time: Date.now(),
@@ -1328,7 +1362,7 @@ class ProfessionalTradingSystem {
 
     // 2. تفعيل التريلينج المعتمد على ATR
     // سنبدأ في ملاحقة السعر بعد تحقيق ربح بسيط (مثلاً 0.4%)
-    if (currentProfit > 1.7) {
+    if (currentProfit > 2.1) {
       // نستخدم معامل 2.0x ATR للملاحقة.
       // السعر الجديد للستوب = السعر الحالي - (2 * ATR)
       const atrMultiplier = currentProfit > 2 ? 2.8 : 2.2;
