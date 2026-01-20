@@ -358,7 +358,7 @@ class ProfessionalTradingSystem {
         )}%)`,
       );
     } else if (pricePosition >= 70) {
-      totalScore -= 20; // مرحلة القمة
+      totalScore; // مرحلة القمة
       warnings.push(
         `⚠️ السعر متضخم وقريب من أعلى سعر يومي (${pricePosition.toFixed(1)}%)`,
       );
@@ -399,7 +399,7 @@ class ProfessionalTradingSystem {
         indicators.rsi > 35 &&
         indicators.rsi < 60
       ) {
-        totalScore += 22;
+        totalScore += 20;
         reasons.push(
           `🔥 انفجار فوليوم ذكي (${indicators.volumeRatio.toFixed(1)}x)`,
         );
@@ -625,13 +625,13 @@ class ProfessionalTradingSystem {
           isValid: true,
           pattern: patternName,
           score: patterns.morningStar
-            ? 35
+            ? 20
             : patterns.bullishEngulfing
-              ? 30
+              ? 20
               : patterns.hammer
-                ? 25
+                ? 15
                 : patterns.doji
-                  ? 15
+                  ? 10
                   : 0,
         };
       }
@@ -640,17 +640,6 @@ class ProfessionalTradingSystem {
     return false;
   }
 
-  checkPriceStability(symbol, supportPrice) {
-    const candles = this.marketData[symbol]?.candles;
-    if (!candles || candles.length < 3) return false;
-
-    // آخر شمعتين مكتملتين
-    const last2 = candles.slice(-3, -1);
-
-    return last2.every(
-      (c) => c[3] >= supportPrice * 0.998, // الذيل ماكسرش الدعم
-    );
-  }
   detectMarketRegime(ind) {
     const volatility = ind.atr / ind.close;
     const trendStrength = Math.abs(ind.sma50 - ind.sma200) / ind.close;
@@ -847,15 +836,6 @@ class ProfessionalTradingSystem {
     const obAnalysis = this.analyzeOrderBookDynamics(symbol, orderBook);
     if (!obAnalysis) return null;
 
-    // ✅ فلتر الثبات الزمني (خلف أقوى جدار)
-    if (obAnalysis?.strongWall?.price) {
-      const stable = this.checkPriceStability(
-        symbol,
-        obAnalysis.strongWall.price,
-      );
-      if (!stable) return null;
-    }
-
     /* ───────────────
      3️⃣ Decision Matrix
   ─────────────── */
@@ -940,56 +920,44 @@ class ProfessionalTradingSystem {
     obAnalysis,
     pricePosition,
   ) {
-    // 1. حساب الـ ATR الأساسي
-    const atr = indicators.atr || entryPrice * 0.008;
+    // 1️⃣ ATR حقيقي
+    const atr = indicators.atr || entryPrice * 0.01;
 
-    // 2. معامل المسافة بناءً على الثقة
-    const multiplier = confidence > 85 ? 2.5 : 3.0;
-    let stopLoss = entryPrice - atr * multiplier;
+    // 2️⃣ ATR Multiplier ذكي (مناسب 15M)
+    const atrMultiplier = confidence >= 90 ? 4.2 : confidence >= 80 ? 4.6 : 5.0;
 
-    // 3. حماية تكتل السيولة
+    let stopLoss = entryPrice - atr * atrMultiplier;
+
+    // 3️⃣ حماية الجدار (بدون خنق الصفقة)
     if (obAnalysis?.strongWall && obAnalysis.strongWall.price < entryPrice) {
-      const wallSafePrice = obAnalysis.strongWall.price * 0.9975;
+      const wallBuffer = atr * 0.8; // مسافة أمان
+      const wallSafePrice = obAnalysis.strongWall.price - wallBuffer;
+
+      // ❗ لا ترفع الستوب – فقط وسّعه لو لزم
       stopLoss = Math.min(stopLoss, wallSafePrice);
     }
 
-    // 4. حدود الستوب لوز - الإصلاح هنا
-    const minSLPrice = entryPrice * 0.988; // حد أدنى (أعلى سعر)
-    const maxSLPrice = entryPrice * 0.977; // حد أقصى (أقل سعر)
+    // ❌ احذف الحدود الصلبة (كانت السبب في الكارثة)
+    // minSLPrice / maxSLPrice → محذوفة
 
-    // التصحيح: stopLoss يجب أن يكون بين maxSLPrice (الأقل) و minSLPrice (الأعلى)
-    stopLoss = Math.max(stopLoss, maxSLPrice); // لا يقل عن الحد الأدنى
-    stopLoss = Math.min(stopLoss, minSLPrice); // لا يزيد عن الحد الأعلى
-
-    // 5. حساب الهدف
+    // 4️⃣ حساب الهدف
     const riskAmount = entryPrice - stopLoss;
-    let takeProfit = entryPrice + riskAmount * 1.9;
 
-    const pos = pricePosition || 50;
-    if (pos <= 15) {
-      takeProfit = entryPrice + riskAmount * 2.5;
-    }
+    let rr = pricePosition <= 15 ? 2.8 : pricePosition <= 30 ? 2.4 : 2.1;
 
-    // 6. حدود الهدف
-    const minTPPrice = entryPrice * 1.018;
-    takeProfit = Math.max(takeProfit, minTPPrice);
+    let takeProfit = entryPrice + riskAmount * rr;
 
-    // 7. حساب نسبة المخاطرة/العائد
-    const riskRewardRatio = (takeProfit - entryPrice) / (entryPrice - stopLoss);
+    // 5️⃣ حد أدنى منطقي للهدف
+    const minTP = entryPrice + atr * 2.2;
+    takeProfit = Math.max(takeProfit, minTP);
 
-    // 8. فحص النتائج
-    if (stopLoss >= entryPrice) {
-      console.error("❌ خطأ: stopLoss >= entryPrice");
+    // 6️⃣ R/R
+    const riskRewardRatio = (takeProfit - entryPrice) / riskAmount;
+
+    // 7️⃣ فحوصات أمان
+    if (stopLoss >= entryPrice || takeProfit <= entryPrice) {
+      console.error("❌ Invalid SL/TP calculation");
       return null;
-    }
-
-    if (takeProfit <= entryPrice) {
-      console.error("❌ خطأ: takeProfit <= entryPrice");
-      return null;
-    }
-
-    if (riskRewardRatio < 1.2) {
-      console.warn(`⚠️ نسبة R/R منخفضة: ${riskRewardRatio.toFixed(2)}`);
     }
 
     return {
@@ -997,9 +965,8 @@ class ProfessionalTradingSystem {
       takeProfit: Number(takeProfit.toFixed(8)),
       riskRewardRatio: Number(riskRewardRatio.toFixed(2)),
       atrValue: atr,
-      wallProtected: !!(
-        obAnalysis?.strongWall && stopLoss <= obAnalysis.strongWall.price
-      ),
+      atrMultiplier,
+      wallProtected: !!obAnalysis?.strongWall,
       stopLossPercent:
         (((entryPrice - stopLoss) / entryPrice) * 100).toFixed(2) + "%",
       takeProfitPercent:
