@@ -1303,46 +1303,55 @@ class ProfessionalTradingSystem {
   }
 
   updateTrailingStop(trade, currentPrice, currentProfit, activeATR) {
-    // 1. تأمين نقطة التعادل (Breakeven)
-    // بمجرد وصول الربح لـ 0.3%، ننقل الستوب لوز لمنطقة الدخول
-    if (currentProfit > 1.2 && trade.currentStopLoss < trade.entryPrice) {
-      trade.currentStopLoss = trade.entryPrice * 1.005; // الدخول + عمولة بسيطة
+    if (currentProfit > 1.5 && trade.currentStopLoss < trade.entryPrice) {
+      trade.currentStopLoss = trade.entryPrice * 1.01; // تأمين 1% ربح
       trade.stopLossHistory.push({
         price: trade.currentStopLoss,
         time: Date.now(),
-        reason: "ATR-Breakeven Protection",
+        reason: "تأمين ربح 1%",
       });
     }
 
-    // أضف هذا الشرط بين الخطوة 1 والخطوة 2
     if (
-      currentProfit > 1.7 &&
-      trade.currentStopLoss < trade.entryPrice * 1.01
+      currentProfit > 3.0 &&
+      trade.currentStopLoss < trade.entryPrice * 1.02
     ) {
-      trade.currentStopLoss = trade.entryPrice * 1.009; // احجز ربح 0.8% فوراً
+      trade.currentStopLoss = trade.entryPrice * 1.02; // تأمين 2% ربح
       trade.stopLossHistory.push({
         price: trade.currentStopLoss,
         time: Date.now(),
-        reason: "Partial Profit Secure",
+        reason: "تأمين ربح 2%",
       });
     }
 
-    // 2. تفعيل التريلينج المعتمد على ATR
-    // سنبدأ في ملاحقة السعر بعد تحقيق ربح بسيط (مثلاً 0.4%)
-    if (currentProfit > 2.1) {
-      // نستخدم معامل 2.0x ATR للملاحقة.
-      // السعر الجديد للستوب = السعر الحالي - (2 * ATR)
-      const atrMultiplier = currentProfit > 2 ? 2.8 : 2.2;
+    // 3. تأمين 3.5% ربح عند 5% + إشارة خروج جزئي
+    if (currentProfit >= 5.0 && !trade.partialExitTaken) {
+      trade.currentStopLoss = trade.entryPrice * 1.035; // تأمين 3.5% ربح
+      trade.stopLossHistory.push({
+        price: trade.currentStopLoss,
+        time: Date.now(),
+        reason: "تأمين ربح 3.5% (جاهز للخروج الجزئي)",
+      });
+
+      trade.partialExitTaken = true;
+      console.log(`💰 ${trade.symbol}: وصلنا 5% ربح - جاهز للخروج الجزئي`);
+
+      // هنا ممكن تاخد 50% من الصفقة بربح كامل
+      // وتبقي 50% يفضلوا يطلعوا
+    }
+
+    // 4. تشغيل التريلينج الحقيقي بعد 8% ربح
+    if (currentProfit > 8.0) {
+      const atrMultiplier = 3.5; // مسافة أمان أكبر
       const atrTrailingStopPrice = currentPrice - activeATR * atrMultiplier;
 
-      // الحماية: نحدث الستوب لوز فقط إذا كان السعر الجديد "أعلى" من الحالي
-      // (عشان الستوب يفضل يرفع لفوق وما ينزلش تحت أبداً)
+      // رفع الاستوب لأعلى فقط
       if (atrTrailingStopPrice > trade.currentStopLoss) {
         trade.currentStopLoss = atrTrailingStopPrice;
         trade.stopLossHistory.push({
           price: trade.currentStopLoss,
           time: Date.now(),
-          reason: `ATR-Trailing (ATR: ${activeATR.toFixed(4)})`,
+          reason: `تريلينج بعد 8% ربح (ATR: ${activeATR.toFixed(4)})`,
         });
       }
     }
