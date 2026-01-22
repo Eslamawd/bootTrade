@@ -793,6 +793,12 @@ class ProfessionalTradingSystem {
      0️⃣ حمايات أساسية
   ─────────────── */
 
+    const trendOk = await this.isTrendOk(symbol);
+    if (!trendOk) {
+      console.log(`⏭️ ${symbol}: مجهودك محفوظ - الترند مش مناسب`);
+      return null;
+    }
+
     const wsHealth = this.wsHealth?.[symbol];
     if (
       !wsHealth ||
@@ -913,6 +919,61 @@ class ProfessionalTradingSystem {
       entryTime: Date.now(),
     };
   }
+  async isTrendOk(symbol) {
+    const candles = this.marketData[symbol]?.candles;
+    if (!candles || candles.length < 50) return false;
+
+    // استخدم الشموع المكتملة فقط (كلها إلا الأخيرة)
+    const completedCandles = candles.slice(0, -1);
+    if (completedCandles.length < 50) return false;
+
+    const closes = completedCandles.map((c) => c[4]);
+    const lastClose = closes[closes.length - 1]; // آخر إغلاق مكتمل
+    const prevClose = closes[closes.length - 2];
+
+    // 1. حساب المتوسطات من البيانات المكتملة فقط
+    const sma20 = closes.slice(-20).reduce((a, b) => a + b) / 20;
+    const sma50 = closes.slice(-50).reduce((a, b) => a + b) / 50;
+
+    // 2. تحليل الزخم (Momentum)
+    const momentum = lastClose > prevClose; // السعر الأخير أعلى من السابق
+
+    // 3. الفلتر الذكي:
+    // حالة 1: إذا السعر فوق SMA20 → ممتاز
+    if (lastClose > sma20) {
+      console.log(
+        `✅ ${symbol}: فوق SMA20 (${lastClose.toFixed(4)} > ${sma20.toFixed(4)})`,
+      );
+      return true;
+    }
+
+    // حالة 2: إذا السعر تحت SMA20 بس فوق SMA50 + معاه زخم إيجابي → مقبول
+    if (lastClose > sma50 && momentum) {
+      console.log(`⚠️ ${symbol}: تحت SMA20 لكن فوق SMA50 مع زخم إيجابي`);
+      return true;
+    }
+
+    // حالة 3: إذا السعر تحت الاتنين بس معاه مؤشرات قوية → ممكن نسمح
+    const indicators = await this.calculateTechnicalIndicators(symbol);
+    if (indicators) {
+      const hasStrongRSI = indicators.rsi < 35; // RSI منخفض جداً
+      const hasStrongVolume = indicators.volumeRatio > 2.5; // حجم كبير
+
+      if (hasStrongRSI && hasStrongVolume) {
+        console.log(
+          `⚠️ ${symbol}: تحت المتوسطات لكن مع RSI ${indicators.rsi.toFixed(1)} وحجم ${indicators.volumeRatio.toFixed(1)}x`,
+        );
+        return true;
+      }
+    }
+
+    // حالة 4: إذا السعر تحت SMA50 بدون زخم → مرفوض
+    console.log(
+      `⛔ ${symbol}: الترند هابط قوي (${lastClose.toFixed(4)} < SMA50 ${sma50.toFixed(4)})`,
+    );
+    return false;
+  }
+
   calculateDynamicTargets(
     entryPrice,
     indicators,
