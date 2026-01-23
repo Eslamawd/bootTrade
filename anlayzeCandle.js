@@ -433,4 +433,4 @@ class analyzeCandle {
   }
 }
 
-module.exports = analyzeCandle;
+export default analyzeCandle;
