@@ -4,7 +4,7 @@ const fs = require("fs");
 const TelegramBot = require("node-telegram-bot-api");
 const TI = require("technicalindicators");
 const DatabaseManager = require("./DatabaseManagers");
-const analyzeCandle = require("./src/analyzeCandle");
+const analyzeCandle = require("./analyzeCandle");
 require("dotenv").config();
 
 const CONFIG = {
